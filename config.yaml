@@ -2,6 +2,6 @@
 # Bu dosyadan model adı ve ollama sunucu adresi gibi ayarlar okunur.
 ollama:
   # Kullanılacak modelin adı
-  model: "deepseek-r1:8b"
+  model: "gemma3"
   # Ollama API sunucusunun adresi
   url: "http://localhost:11434/api/generate"

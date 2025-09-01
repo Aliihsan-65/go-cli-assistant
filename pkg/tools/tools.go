@@ -8,78 +8,54 @@ import (
 	"time"
 )
 
-// Tool, AI tarafından kullanılabilecek bir aracı temsil eder.
+// Tool, bir aracı ve onunla ilgili AI'ya yol gösterecek meta verileri tanımlar.
 type Tool struct {
 	Name        string
 	Description string
-	// Params, aracın alabileceği parametreleri ve açıklamalarını tutar.
-	Params      map[string]string
-	// Execute, aracın asıl işlevini yerine getiren fonksiyondur.
-	Execute     func(params map[string]string) (string, error)
+	Triggers    []string // Bu aracı düşünmesini tetikleyecek anahtar konular/fiiller
+	Examples    []string // Tam kullanım örnekleri
+
+	Execute func(params map[string]string) (string, error)
 }
 
-// ToolRegistry, sistemdeki tüm araçları tutar.
-var ToolRegistry = make(map[string]Tool)
-
-// init, program başlarken araçları kaydeder.
-func init() {
-	RegisterTool(Tool{
-		Name: "run_shell_command",
-		Description: `Kullanıcı bir terminal komutu çalıştırmak, bir programı yürütmek veya bir paket kurmak (örneğin pacman ile) istediğinde kullanılır. Bu çok güçlü bir araçtır. İnteraktif onay isteyen komutlarda takılmamak için '--noconfirm', '-y' gibi bayrakları kullanmaya çalış. ASLA kullanıcı onayı olmadan 'sudo' ile komut çalıştırmayı deneme.`,
-		Params:      map[string]string{"command": "çalıştırılacak tam terminal komutu"},
-		Execute: func(params map[string]string) (string, error) {
-			command := params["command"]
-			if command == "" {
-				return "", fmt.Errorf("çalıştırılacak komut belirtilmedi")
-			}
-			// Komutu ve argümanlarını ayır
-			parts := strings.Fields(command)
-			cmd := exec.Command(parts[0], parts[1:]...)
-
-			// Komutun çıktısını (stdout ve stderr) yakala
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				return "", fmt.Errorf("komut çalıştırılırken hata oluştu: %w, Çıktı: %s", err, string(output))
-			}
-			return fmt.Sprintf("Komut başarıyla çalıştırıldı. Çıktı:\n%s", string(output)), nil
-		},
-	})
-
-	RegisterTool(Tool{
-		Name:        "get_current_time",
-		Description: "Kullanıcı saati, tarihi veya zamanı sorduğunda mevcut sistem saatini ve tarihini almak için kullanılır.",
-		Params:      map[string]string{},
-		Execute: func(params map[string]string) (string, error) {
-			currentTime := time.Now().Format("2006-01-02 15:04:05")
-			return fmt.Sprintf("Mevcut sistem zamanı: %s", currentTime), nil
-		},
-	})
-
-	RegisterTool(Tool{
+// ToolRegistry, sistemdeki tüm araçları zenginleştirilmiş tanımlarıyla birlikte tutar.
+var ToolRegistry = map[string]Tool{
+	"list_directory": {
 		Name:        "list_directory",
-		Description: "Kullanıcı bir dizindeki dosyaları veya klasörleri görmek istediğinde kullanılır. Kullanıcı 'bu dizin', 'mevcut dizin' gibi bir ifade kullanırsa veya bir dizin belirtmezse, path parametresi için '.' kullanmalısın.",
-		Params:      map[string]string{"path": "listelenecek dizinin yolu"},
+		Description: "Bir dizindeki dosya ve klasörleri listeler.",
+		Triggers:    []string{"listele", "göster", "neler var", "dizin içeriği", "klasörler", "dosyalar"},
+		Examples: []string{
+			"Kullanıcı: bu dizindeki dosyaları göster -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"list_directory\",\"params\":{\"path\":\".\"}}}</arac_cagrisi>",
+			"Kullanıcı: cmd klasöründe ne var? -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"list_directory\",\"params\":{\"path\":\"cmd\"}}}</arac_cagrisi>",
+		},
 		Execute: func(params map[string]string) (string, error) {
 			path := params["path"]
 			if path == "" {
 				path = "."
 			}
-			entries, err := os.ReadDir(path)
+			files, err := os.ReadDir(path)
 			if err != nil {
-				return "", fmt.Errorf("dizin '%s' okunurken hata oluştu: %w", path, err)
+				return "", fmt.Errorf("dizin okunamadı: %w", err)
 			}
 			var fileNames []string
-			for _, e := range entries {
-				fileNames = append(fileNames, e.Name())
+			for _, file := range files {
+				if file.IsDir() {
+					fileNames = append(fileNames, file.Name()+"/")
+				} else {
+					fileNames = append(fileNames, file.Name())
+				}
 			}
 			return "Dizin içeriği:\n" + strings.Join(fileNames, "\n"), nil
 		},
-	})
-
-	RegisterTool(Tool{
+	},
+	"read_file": {
 		Name:        "read_file",
-		Description: "Kullanıcı belirli bir dosyanın içeriğini okumak veya görmek istediğinde kullanılır.",
-		Params:      map[string]string{"path": "okunacak dosyanın yolu"},
+		Description: "Belirtilen bir dosyanın içeriğini okur.",
+		Triggers:    []string{"oku", "içeriği", "içerik", "göster", "ne yazıyor", "aç"},
+		Examples: []string{
+			"Kullanıcı: deneme.txt dosyasını oku -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"read_file\",\"params\":{\"path\":\"deneme.txt\"}}}</arac_cagrisi>",
+			"Kullanıcı: config.yaml içeriği nedir? -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"read_file\",\"params\":{\"path\":\"config.yaml\"}}}</arac_cagrisi>",
+		},
 		Execute: func(params map[string]string) (string, error) {
 			path := params["path"]
 			if path == "" {
@@ -87,16 +63,18 @@ func init() {
 			}
 			content, err := os.ReadFile(path)
 			if err != nil {
-				return "", fmt.Errorf("dosya '%s' okunurken hata oluştu: %w", path, err)
+				return "", fmt.Errorf("dosya okunamadı: %w", err)
 			}
-			return "Dosya içeriği:\n" + string(content), nil
+			return string(content), nil
 		},
-	})
-
-	RegisterTool(Tool{
+	},
+	"write_file": {
 		Name:        "write_file",
-		Description: "Kullanıcı bir dosyaya bir şey yazmak, bir dosyayı değiştirmek veya yeni bir dosya oluşturmak istediğinde kullanılır.",
-		Params:      map[string]string{"path": "yazılacak dosyanın yolu", "content": "dosyaya yazılacak içerik"},
+		Description: "Belirtilen bir dosyaya içerik yazar. DİKKAT: Dosyanın üzerine tamamen yazar, ekleme yapmaz.",
+		Triggers:    []string{"yaz", "kaydet", "oluştur", "değiştir", "güncelle", "üzerine yaz"},
+		Examples: []string{
+			"Kullanıcı: yeni.txt dosyasına 'merhaba dünya' yaz -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"write_file\",\"params\":{\"path\":\"yeni.txt\",\"content\":\"merhaba dünya\"}}}</arac_cagrisi>",
+		},
 		Execute: func(params map[string]string) (string, error) {
 			path := params["path"]
 			content := params["content"]
@@ -105,34 +83,83 @@ func init() {
 			}
 			err := os.WriteFile(path, []byte(content), 0644)
 			if err != nil {
-				return "", fmt.Errorf("'%s' dosyasına yazılırken hata oluştu: %w", path, err)
+				return "", fmt.Errorf("dosyaya yazılamadı: %w", err)
 			}
-			return fmt.Sprintf("'%s' dosyası başarıyla yazıldı.", path), nil
+			return fmt.Sprintf("'%s' dosyasına başarıyla yazıldı.", path), nil
 		},
-	})
+	},
+	"append_file": {
+		Name:        "append_file",
+		Description: "Belirtilen bir dosyanın sonuna içerik ekler. Dosya yoksa oluşturur.",
+		Triggers:    []string{"ekle", "sonuna ekle", "ilave et"},
+		Examples: []string{
+			"Kullanıcı: deneme.txt sonuna '789' ekle -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"append_file\",\"params\":{\"path\":\"deneme.txt\",\"content\":\"789\"}}}</arac_cagrisi>",
+		},
+		Execute: func(params map[string]string) (string, error) {
+			path := params["path"]
+			content := params["content"]
+			if path == "" {
+				return "", fmt.Errorf("dosya yolu belirtilmedi")
+			}
+			f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err != nil {
+				return "", fmt.Errorf("dosya açılamadı: %w", err)
+			}
+			defer f.Close()
+			if _, err := f.WriteString(content); err != nil {
+				return "", fmt.Errorf("dosyaya ekleme yapılamadı: %w", err)
+			}
+			return fmt.Sprintf("'%s' dosyasına başarıyla ekleme yapıldı.", path), nil
+		},
+	},
+	"run_shell_command": {
+		Name:        "run_shell_command",
+		Description: "Bir terminal komutu çalıştırır.",
+		Triggers:    []string{"çalıştır", "komut", "terminal", "execute", "run"},
+		Examples: []string{
+			"Kullanıcı: go versiyonunu çalıştır -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"run_shell_command\",\"params\":{\"command\":\"go version\"}}}</arac_cagrisi>",
+		},
+		Execute: func(params map[string]string) (string, error) {
+			command := params["command"]
+			if command == "" {
+				return "", fmt.Errorf("komut belirtilmedi")
+			}
+			out, err := exec.Command("bash", "-c", command).CombinedOutput()
+			if err != nil {
+				return "", fmt.Errorf("komut çalıştırılamadı: %s, hata: %w", string(out), err)
+			}
+			return string(out), nil
+		},
+	},
+	"get_time": {
+		Name:        "get_time",
+		Description: "Mevcut tarih ve saati döndürür.",
+		Triggers:    []string{"saat", "tarih", "zaman", "gün"},
+		Examples: []string{
+			"Kullanıcı: saat kaç? -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"get_time\",\"params\":{}}}</arac_cagrisi>",
+		},
+		Execute: func(params map[string]string) (string, error) {
+			return time.Now().Format("2006-01-02 15:04:05"), nil
+		},
+	},
 }
 
-// RegisterTool, yeni bir aracı kayda ekler.
-func RegisterTool(tool Tool) {
-	ToolRegistry[tool.Name] = tool
-}
-
-// GenerateToolsPrompt, kayıtlı tüm araçlardan LLM için bir sistem prompt'u oluşturur.
+// GenerateToolsPrompt, AI'ya sunulacak olan araçların dinamik ve detaylı kullanım kılavuzunu oluşturur.
 func GenerateToolsPrompt() string {
 	var promptBuilder strings.Builder
-	promptBuilder.WriteString("Kullanabileceğin Araçlar:\n")
-	for _, tool := range ToolRegistry {
-		promptBuilder.WriteString(fmt.Sprintf(`- tool_name: "%s"
-`, tool.Name))
-		promptBuilder.WriteString(fmt.Sprintf(`  - description: "%s"
-`, tool.Description))
+	promptBuilder.WriteString("# KULLANABİLECEĞİN ARAÇLAR\n\n")
+	promptBuilder.WriteString("Aşağıda, kullanıcı isteklerini yerine getirmek için kullanabileceğin araçların bir listesi bulunmaktadır. Her araç için açıklamayı, ne zaman kullanman gerektiğini ve kullanım örneklerini dikkatlice incele.\n\n")
 
-		var paramParts []string
-		for pName, pDesc := range tool.Params {
-			paramParts = append(paramParts, fmt.Sprintf(`"%s": "%s"`, pName, pDesc))
+	for _, tool := range ToolRegistry {
+		promptBuilder.WriteString(fmt.Sprintf("## Araç: %s\n", tool.Name))
+		promptBuilder.WriteString(fmt.Sprintf("- Açıklama: %s\n", tool.Description))
+		promptBuilder.WriteString(fmt.Sprintf("- Ne Zaman Kullanmalı: Kullanıcı bir şeyleri \"%s\" gibi ifadelerle istiyorsa bu aracı düşün.\n", strings.Join(tool.Triggers, `", "`)))
+		promptBuilder.WriteString("- Örnekler:\n")
+		for _, example := range tool.Examples {
+			promptBuilder.WriteString(fmt.Sprintf("  - %s\n", example))
 		}
-		promptBuilder.WriteString(fmt.Sprintf(`  - params: {%s}
-`, strings.Join(paramParts, ", ")))
+		promptBuilder.WriteString("\n")
 	}
+
 	return promptBuilder.String()
 }
