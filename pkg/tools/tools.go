@@ -12,21 +12,21 @@ import (
 type Tool struct {
 	Name        string
 	Description string
-	Triggers    []string // Bu aracı düşünmesini tetikleyecek anahtar konular/fiiller
-	Examples    []string // Tam kullanım örnekleri
+	// Triggers    []string // Bu aracı düşünmesini tetikleyecek anahtar konular/fiiller
+	Examples []string // Tam kullanım örnekleri
 
 	Execute func(params map[string]string) (string, error)
 }
 
 // ToolRegistry, sistemdeki tüm araçları zenginleştirilmiş tanımlarıyla birlikte tutar.
 var ToolRegistry = map[string]Tool{
+	
 	"list_directory": {
 		Name:        "list_directory",
-		Description: "Bir dizindeki dosya ve klasörleri listeler.",
-		Triggers:    []string{"listele", "göster", "neler var", "dizin içeriği", "klasörler", "dosyalar"},
+		Description: "YALNIZCA bir dosya sistemi dizinindeki dosyaları ve klasörleri listelemek için kullanılır. Genel soruları yanıtlamak için KULLANMA.",
 		Examples: []string{
-			"Kullanıcı: bu dizindeki dosyaları göster -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"list_directory\",\"params\":{\"path\":\".\"}}}</arac_cagrisi>",
-			"Kullanıcı: cmd klasöründe ne var? -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"list_directory\",\"params\":{\"path\":\"cmd\"}}}</arac_cagrisi>",
+			"Kullanıcı: bu dizindeki dosyaları göster -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"list_directory\",\"params\":{\"path\":\".\"}}}<arac_cagrisi>",
+			"Kullanıcı: cmd klasöründe ne var? -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"list_directory\",\"params\":{\"path\":\"cmd\"}}}<arac_cagrisi>",
 		},
 		Execute: func(params map[string]string) (string, error) {
 			path := params["path"]
@@ -50,11 +50,10 @@ var ToolRegistry = map[string]Tool{
 	},
 	"read_file": {
 		Name:        "read_file",
-		Description: "Belirtilen bir dosyanın içeriğini okur.",
-		Triggers:    []string{"oku", "içeriği", "içerik", "göster", "ne yazıyor", "aç"},
+		Description: "YALNIZCA yerel dosya sistemindeki belirli bir dosyanın içeriğini okumak için kullanılır.",
 		Examples: []string{
-			"Kullanıcı: deneme.txt dosyasını oku -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"read_file\",\"params\":{\"path\":\"deneme.txt\"}}}</arac_cagrisi>",
-			"Kullanıcı: config.yaml içeriği nedir? -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"read_file\",\"params\":{\"path\":\"config.yaml\"}}}</arac_cagrisi>",
+			"Kullanıcı: deneme.txt dosyasını oku -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"read_file\",\"params\":{\"path\":\"deneme.txt\"}}}<arac_cagrisi>",
+			"Kullanıcı: config.yaml içeriği nedir? -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"read_file\",\"params\":{\"path\":\"config.yaml\"}}}<arac_cagrisi>",
 		},
 		Execute: func(params map[string]string) (string, error) {
 			path := params["path"]
@@ -70,10 +69,9 @@ var ToolRegistry = map[string]Tool{
 	},
 	"write_file": {
 		Name:        "write_file",
-		Description: "Belirtilen bir dosyaya içerik yazar. DİKKAT: Dosyanın üzerine tamamen yazar, ekleme yapmaz.",
-		Triggers:    []string{"yaz", "kaydet", "oluştur", "değiştir", "güncelle", "üzerine yaz"},
+		Description: "YALNIZCA yerel dosya sistemindeki belirli bir dosyaya içerik yazar. DİKKAT: Dosyanın üzerine tamamen yazar.",
 		Examples: []string{
-			"Kullanıcı: yeni.txt dosyasına 'merhaba dünya' yaz -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"write_file\",\"params\":{\"path\":\"yeni.txt\",\"content\":\"merhaba dünya\"}}}</arac_cagrisi>",
+			"Kullanıcı: yeni.txt dosyasına 'merhaba dünya' yaz -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"write_file\",\"params\":{\"path\":\"yeni.txt\",\"content\":\"merhaba dünya\"}}}<arac_cagrisi>",
 		},
 		Execute: func(params map[string]string) (string, error) {
 			path := params["path"]
@@ -90,10 +88,9 @@ var ToolRegistry = map[string]Tool{
 	},
 	"append_file": {
 		Name:        "append_file",
-		Description: "Belirtilen bir dosyanın sonuna içerik ekler. Dosya yoksa oluşturur.",
-		Triggers:    []string{"ekle", "sonuna ekle", "ilave et"},
+		Description: "YALNIZCA yerel dosya sistemindeki belirli bir dosyanın sonuna içerik ekler.",
 		Examples: []string{
-			"Kullanıcı: deneme.txt sonuna '789' ekle -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"append_file\",\"params\":{\"path\":\"deneme.txt\",\"content\":\"789\"}}}</arac_cagrisi>",
+			"Kullanıcı: deneme.txt sonuna '789' ekle -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"append_file\",\"params\":{\"path\":\"deneme.txt\",\"content\":\"789\"}}}<arac_cagrisi>",
 		},
 		Execute: func(params map[string]string) (string, error) {
 			path := params["path"]
@@ -114,10 +111,9 @@ var ToolRegistry = map[string]Tool{
 	},
 	"run_shell_command": {
 		Name:        "run_shell_command",
-		Description: "Bir terminal komutu çalıştırır.",
-		Triggers:    []string{"çalıştır", "komut", "terminal", "execute", "run"},
+		Description: "YALNIZCA bir terminal komutunu (shell command) çalıştırmak için kullanılır.",
 		Examples: []string{
-			"Kullanıcı: go versiyonunu çalıştır -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"run_shell_command\",\"params\":{\"command\":\"go version\"}}}</arac_cagrisi>",
+			"Kullanıcı: go versiyonunu çalıştır -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"run_shell_command\",\"params\":{\"command\":\"go version\"}}}<arac_cagrisi>",
 		},
 		Execute: func(params map[string]string) (string, error) {
 			command := params["command"]
@@ -134,9 +130,8 @@ var ToolRegistry = map[string]Tool{
 	"get_time": {
 		Name:        "get_time",
 		Description: "Mevcut tarih ve saati döndürür.",
-		Triggers:    []string{"saat", "tarih", "zaman", "gün"},
 		Examples: []string{
-			"Kullanıcı: saat kaç? -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"get_time\",\"params\":{}}}</arac_cagrisi>",
+			"Kullanıcı: saat kaç? -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"get_time\",\"params\":{}}}<arac_cagrisi>",
 		},
 		Execute: func(params map[string]string) (string, error) {
 			return time.Now().Format("2006-01-02 15:04:05"), nil
@@ -148,12 +143,11 @@ var ToolRegistry = map[string]Tool{
 func GenerateToolsPrompt() string {
 	var promptBuilder strings.Builder
 	promptBuilder.WriteString("# KULLANABİLECEĞİN ARAÇLAR\n\n")
-	promptBuilder.WriteString("Aşağıda, kullanıcı isteklerini yerine getirmek için kullanabileceğin araçların bir listesi bulunmaktadır. Her araç için açıklamayı, ne zaman kullanman gerektiğini ve kullanım örneklerini dikkatlice incele.\n\n")
+	promptBuilder.WriteString("Aşağıda, kullanıcı isteklerini yerine getirmek için kullanabileceğin araçların bir listesi bulunmaktadır. Bir aracı KULLANMADAN ÖNCE açıklamasını ve örneklerini DİKKATLİCE oku.\n\n")
 
 	for _, tool := range ToolRegistry {
 		promptBuilder.WriteString(fmt.Sprintf("## Araç: %s\n", tool.Name))
 		promptBuilder.WriteString(fmt.Sprintf("- Açıklama: %s\n", tool.Description))
-		promptBuilder.WriteString(fmt.Sprintf("- Ne Zaman Kullanmalı: Kullanıcı bir şeyleri \"%s\" gibi ifadelerle istiyorsa bu aracı düşün.\n", strings.Join(tool.Triggers, `", "`)))
 		promptBuilder.WriteString("- Örnekler:\n")
 		for _, example := range tool.Examples {
 			promptBuilder.WriteString(fmt.Sprintf("  - %s\n", example))

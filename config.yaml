@@ -1,7 +1,20 @@
 # Go-Agent Yapılandırma Dosyası
 # Bu dosyadan model adı ve ollama sunucu adresi gibi ayarlar okunur.
 ollama:
-  # Kullanılacak modelin adı
-  model: "gemma3"
-  # Ollama API sunucusunun adresi
-  url: "http://localhost:11434/api/generate"
+  # Kullanılacak akıl yürütme (reasoning) modeli
+  model: "llama3.1:latest"
+  # Metinleri vektöre çevirecek olan embedding modeli
+  embedding_model: "nomic-embed-text"
+  # Ollama API sunucusunun ana adresi
+  url: "http://localhost:11434"
+
+chroma: # Vektör veritabanı ayarları
+  # ChromaDB sunucusunun adresi
+  url: "http://localhost:8000"
+  # Hafıza kayıtlarının tutulacağı koleksiyonun adı
+  collection_name: "go_agent_memory"
+  # Bir sonucun "benzer" sayılması için gereken minimum benzerlik skoru (0.0 - 1.0)
+  similarity_threshold: 0.75
+
+expert_api: # İleride kullanılacak uzman API ayarları
+  api_key: "HENUZ_YOK"

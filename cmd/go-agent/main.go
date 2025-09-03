@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"go-agent/pkg/config"
+	"go-agent/pkg/memory"
 	"go-agent/pkg/ollama"
 	"go-agent/pkg/tools"
 	"strings"
@@ -11,7 +12,7 @@ import (
 	"github.com/pterm/pterm"
 )
 
-// extractTagContent bir metin içinden belirtilen XML etiketinin içeriğini çıkarır.
+// extractTagContent extracts the content between specified XML tags from a text.
 func extractTagContent(text, tagName string) string {
 	startTag := "<" + tagName + ">"
 	endTag := "</" + tagName + ">"
@@ -30,26 +31,25 @@ func extractTagContent(text, tagName string) string {
 	return strings.TrimSpace(text[startIndex : startIndex+endIndex])
 }
 
-// handleToolCall, bir araç çağrısını yönetir, çalıştırır ve geçmişi kaydeder.
+// handleToolCall manages a tool call, executes it, and records the history.
 func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJSON string, dusunce string) {
 	if toolCall.ToolName == "" {
-		pterm.Error.Println("AI bir araç çağırmak istedi ancak hangi aracı kullanacağını belirtmedi.")
-		*conversationHistory += "Asistan: [Hata: İsimsiz bir araç çağırma isteği alındı.]\n"
+		pterm.Error.Println("AI attempted to call a tool but did not specify which one.")
+		*conversationHistory += "Asistan: [Hata: İsimsiz bir araç çağrı isteği alındı.]\n"
 		return
 	}
 
-	// AI'nın "run_command" halüsinasyonunu "run_shell_command" olarak düzelt
 	if toolCall.ToolName == "run_command" {
-		pterm.Warning.Println("AI 'run_command' aracını çağırmayı denedi, 'run_shell_command' olarak düzeltiliyor.")
+		pterm.Warning.Println("AI attempted to call 'run_command', correcting to 'run_shell_command'.")
 		toolCall.ToolName = "run_shell_command"
 	}
 
-	pterm.Info.Println("LLM bir araç kullanmak istiyor:", toolCall.ToolName)
-	pterm.Info.Println("Parametreler:", toolCall.Params)
+	pterm.Info.Println("LLM intends to use tool:", toolCall.ToolName)
+	pterm.Info.Println("Parameters:", toolCall.Params)
 
 	tool, exists := tools.ToolRegistry[toolCall.ToolName]
 	if !exists {
-		pterm.Error.Println("Bilinmeyen araç isteği:", toolCall.ToolName)
+		pterm.Error.Println("Unknown tool requested:", toolCall.ToolName)
 		*conversationHistory += "Asistan: [Hata: Bilinmeyen bir araç istendi.]\n"
 		return
 	}
@@ -62,7 +62,12 @@ func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJS
 	case "append_file":
 		msg = pterm.Warning.Sprintf("DİKKAT: '%s' aracını çalıştırmak '%s' dosyasına ekleme yapacak. Onaylıyor musunuz?", tool.Name, toolCall.Params["path"])
 	case "run_shell_command":
-		commandToRun := toolCall.Params["command"]
+		commandToRun, exists := toolCall.Params["command"]
+		if !exists {
+			pterm.Error.Println("Missing 'command' parameter for run_shell_command.")
+			*conversationHistory += "Asistan: [Hata: 'command' parametresi eksik.]\n"
+			return
+		}
 		if strings.Contains(commandToRun, "sudo") {
 			msg = pterm.Error.Sprintf("!!! AŞIRI TEHLİKELİ İŞLEM !!! '%s' komutunu 'sudo' ile çalıştırmak üzeresiniz. Bu, sisteminizde kalıcı değişiklikler yapabilir veya zarar verebilir. Emin misiniz?", commandToRun)
 		} else {
@@ -73,15 +78,14 @@ func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJS
 	approved, _ := pterm.DefaultInteractiveConfirm.Show(msg)
 
 	var turnHistory string
-	// Her durumda düşünce ve araç çağrısını geçmişe ekle
 	if dusunce != "" {
 		turnHistory += "Asistan: <dusunce>" + dusunce + "</dusunce>\n"
 	}
-	// AI'nın unuttuğu etiketleri yeniden oluşturarak geçmişi daha tutarlı hale getir
 	turnHistory += "<arac_cagrisi>" + rawJSON + "</arac_cagrisi>\n"
 
 	if !approved {
 		pterm.Warning.Println("İşlem iptal edildi.")
+
 		turnHistory += "Araç-Sonucu: [Kullanıcı tarafından iptal edildi.]\n"
 		*conversationHistory += turnHistory
 		return
@@ -97,6 +101,7 @@ func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJS
 		turnHistory += "Araç-Sonucu: " + result + "\n"
 	}
 	*conversationHistory += turnHistory
+	// TODO: Add successful expert responses to memory here.
 }
 
 func main() {
@@ -105,23 +110,35 @@ func main() {
 		pterm.Fatal.Printf("Yapılandırma yüklenemedi: %v\n", err)
 	}
 
+	chromaClient := memory.NewChromaClient(cfg.Chroma.URL, cfg.Chroma.CollectionName)
+
 	var conversationHistory string
 
 	pterm.DefaultBigText.WithLetters(pterm.NewLettersFromString("GO AGENT")).Render()
 	pterm.Info.Println("Go ile yazılmış, modüler ve yapılandırılabilir AI asistanı.")
+	pterm.Info.Println("Hafıza (ChromaDB) istemcisi başarıyla başlatıldı.")
 	pterm.Println()
 
-	baseSystemPrompt := `Sen, bir Go programı tarafından kullanılan bir yapay zeka asistanısın.
-# GÖREVİN
-Kullanıcı isteklerini analiz et ve görevleri adım adım tamamla. Her adımda bir araç kullanabilir veya kullanıcıya cevap verebilirsin.
-# CEVAP KURALLARI
-1.  **ARAÇ KULLANIMI GEREKTİĞİNDE:**
-    - **TEK BİR ADIM PLANLA:** Önce, yapacağın *sadece bir sonraki* eylemi '<dusunce>...</dusunce>' etiketleri içinde açıkla.
-    - **TEK BİR ARAÇ ÇAĞIR:** Ardından, *sadece bir tane* araç çağrısı için gerekli JSON objesini '<arac_cagrisi>...</arac_cagrisi>' etiketleri içine yerleştir.
-    - **DUR VE BEKLE:** Araç çağrısını yaptıktan sonra cevabını bitir. Sistem sana aracın sonucunu "Araç-Sonucu: [sonuç]" formatında geri verecektir. Bir sonraki adıma geçmeden önce bu sonucu bekle. Kendi kendine araç sonucu üretme veya varsayma.
-2.  **SOHBET GEREKTİĞİNDE (Araç Kullanımı Yoksa):**
-    - Kullanıcının isteği bir araç kullanımı gerektirmiyorsa (örn: "merhaba", "nasılsın?"), SADECE ve SADECE düz metin olarak cevap ver.
-    - Bu durumda ASLA XML etiketi veya JSON kullanma.`
+	baseSystemPrompt := `SEN, bir Go programı tarafından kullanılan ve araçları kullanabilen bir yapay zeka asistanısın.
+
+# KESİN VE NET KURALLAR:
+
+1.  **CEVAP VERME STRATEJİN:**
+    A. **DOĞRUDAN CEVAP VER:** Eğer kullanıcı selam veriyor, sohbet ediyor, hal hatır soruyor VEYA sorduğu soru ("bisikletçi beslenmesi nedir" gibi) genel bilgi, ansiklopedik bilgi veya tanım içeriyorsa, **KESİNLİKLE ARAÇ KULLANMA**. Bu durumlarda, soruyu doğrudan kendi bilgilerinle, düz metin olarak cevapla.
+    B. **ARAÇ KULLAN:** Eğer kullanıcı senden dosya sistemi üzerinde bir işlem yapmanı (oku, yaz), bir komut çalıştırmanı veya internetten **GÜNCEL, ANLIK veya ÇOK SPESİFİK** bir bilgi (örneğin "bugünkü hava durumu", "X şirketinin hisse senedi fiyatı") bulmanı istiyorsa, o zaman araç kullan.
+
+2.  **ARAÇ KULLANIM FORMATI:** Araç kullanmaya karar verirsen, **SADECE** aşağıdaki formatı kullan. Başka HİÇBİR ŞEY yazma.
+    - Önce "<dusunce>..." etiketi içine kısa bir plan yaz.
+    - SONRA, "<arac_cagrisi>..." etiketi içine JSON olarak aracı çağır.
+
+    ` + "```xml" + `
+    <dusunce>Kullanıcının isteğini yerine getirmek için X aracını kullanacağım.</dusunce>
+    <arac_cagrisi>{"type":"tool_call","tool_call":{"tool_name":"araç_adı","params":{"parametre":"değer"}}}</arac_cagrisi>
+    ` + "```" + `
+
+# UNUTMA:
+- ASLA kendi kendine "Araç-Sonucu:" diye bir çıktı üretme. Sistem bunu sana sağlayacak.
+- ASLA kullanıcıya soru sorma veya onay isteme. Sadece kuralları uygula.`
 
 	toolsPrompt := tools.GenerateToolsPrompt()
 	fullSystemPrompt := fmt.Sprintf("%s\n\n%s", baseSystemPrompt, toolsPrompt)
@@ -134,31 +151,50 @@ Kullanıcı isteklerini analiz et ve görevleri adım adım tamamla. Her adımda
 			break
 		}
 
-		conversationHistory += "Kullanıcı: " + userInput + "\n"
+		spinner, _ := pterm.DefaultSpinner.Start("Hafıza kontrol ediliyor...")
+		embedding, err := ollama.GenerateEmbedding(cfg.Ollama.URL, cfg.Ollama.EmbeddingModel, userInput)
 
-		finalPrompt := fmt.Sprintf(`%s
+		var finalResponseStr string
 
---- Önceki Konuşma ---
-%s
----------------------
-
-Kullanıcı İsteği: %s`, fullSystemPrompt, conversationHistory, userInput)
-
-		spinner, _ := pterm.DefaultSpinner.Start("Yapay zeka düşünüyor...")
-		responseStr, err := ollama.Generate(cfg.Ollama.URL, cfg.Ollama.Model, finalPrompt)
-		if err != nil {
-			spinner.Fail(fmt.Sprintf("Ollama'dan cevap alınamadı: %v", err))
-			continue
+		if err != nil || embedding == nil || len(embedding) == 0 {
+			spinner.Fail(fmt.Sprintf("Embedding oluşturulamadı veya boş: %v", err))
+			spinner.UpdateText("Embedding hatası, doğrudan yapay zeka düşünüyor...")
+		} else {
+			cachedResult, err := chromaClient.Query(embedding, 1, cfg.Chroma.SimilarityThreshold)
+			if err != nil {
+				spinner.Fail(fmt.Sprintf("Hafıza sorgulanamadı: %v", err))
+				spinner.UpdateText("Hafıza sorgusu başarısız, yapay zeka düşünüyor...")
+			} else if cachedResult != "" {
+				spinner.Success("Cevap hafızadan bulundu!")
+				pterm.DefaultBox.WithTitle("Hafızadan Gelen Cevap").Println(pterm.LightGreen(cachedResult))
+				finalResponseStr = cachedResult // Use the response from memory
+			} else {
+				spinner.UpdateText("Hafızada bir şey bulunamadı, yapay zeka düşünüyor...")
+			}
 		}
-		spinner.Success("Cevap alındı!")
 
-		dusunce := extractTagContent(responseStr, "dusunce")
-		aracCagrisiJSON := extractTagContent(responseStr, "arac_cagrisi")
+		// If no response from memory or memory query failed, ask the LLM
+		if finalResponseStr == "" {
+			conversationHistory += "Kullanıcı: " + userInput + "\n"
 
-		// AI'nın <arac_cagrisi> etiketini unuttuğu ancak yine de bir JSON döndürdüğü durumları yakala
-		if aracCagrisiJSON == "" && strings.HasPrefix(strings.TrimSpace(responseStr), "{") {
+			finalPrompt := fmt.Sprintf("%s\n\n--- Önceki Konuşma ---\n%s\n---------------------\n\nKullanıcı İsteği: %s", fullSystemPrompt, conversationHistory, userInput)
+
+			responseStr, err := ollama.Generate(cfg.Ollama.URL, cfg.Ollama.Model, finalPrompt)
+			if err != nil {
+				spinner.Fail(fmt.Sprintf("Ollama'dan cevap alınamadı: %v", err))
+				continue
+			}
+			spinner.Success("Cevap alındı!")
+			finalResponseStr = responseStr // Use the response from LLM
+		}
+
+		// Process the final response (from memory or LLM)
+		dusunce := extractTagContent(finalResponseStr, "dusunce")
+		aracCagrisiJSON := extractTagContent(finalResponseStr, "arac_cagrisi")
+
+		if aracCagrisiJSON == "" && strings.HasPrefix(strings.TrimSpace(finalResponseStr), "{") {
 			pterm.Warning.Println("AI, '<arac_cagrisi>' etiketini kullanmayı unuttu, ancak bir JSON nesnesi döndürdü. Yine de işlenmeye çalışılıyor.")
-			aracCagrisiJSON = responseStr
+			aracCagrisiJSON = finalResponseStr
 		}
 
 		if aracCagrisiJSON != "" {
@@ -166,23 +202,29 @@ Kullanıcı İsteği: %s`, fullSystemPrompt, conversationHistory, userInput)
 				pterm.DefaultBox.WithTitle("AI Düşünce Süreci").WithTextStyle(pterm.NewStyle(pterm.FgLightMagenta)).Println(dusunce)
 			}
 
-			var aiResponse ollama.AIResponse
-			err = json.Unmarshal([]byte(aracCagrisiJSON), &aiResponse)
-			if err != nil {
-				pterm.Error.Printf("Araç çağrısı JSON formatında değil veya hatalı: %v\nGelen JSON: %s\n", err, aracCagrisiJSON)
-				conversationHistory += "Asistan: [Hata: Geçersiz formatta araç çağrısı alındı.]\n"
-				continue
-			}
+			trimmedJSON := strings.TrimSpace(aracCagrisiJSON)
+			if strings.HasPrefix(trimmedJSON, "{") && strings.HasSuffix(trimmedJSON, "}") {
+				var aiResponse ollama.AIResponse
+				err = json.Unmarshal([]byte(trimmedJSON), &aiResponse)
+				if err != nil {
+					pterm.Error.Printf("Araç çağrısı JSON formatında değil veya hatalı: %v\nGelen JSON: %s\n", err, trimmedJSON)
+					conversationHistory += "Asistan: [Hata: Geçersiz formatta araç çağrısı alındı.]\n"
+					continue
+				}
 
-			if aiResponse.Type == "tool_call" {
-				handleToolCall(aiResponse.ToolCall, &conversationHistory, aracCagrisiJSON, dusunce)
+				if aiResponse.Type == "tool_call" {
+					handleToolCall(aiResponse.ToolCall, &conversationHistory, trimmedJSON, dusunce)
+				} else {
+					pterm.Error.Printf("Beklenmedik cevap tipi: '%s'\n", aiResponse.Type)
+					conversationHistory += "Asistan: [Hata: Beklenmedik bir cevap tipi döndü.]\n"
+				}
 			} else {
-				pterm.Error.Printf("Beklenmedik cevap tipi: '%s'\n", aiResponse.Type)
-				conversationHistory += "Asistan: [Hata: Beklenmedik bir cevap tipi döndü.]\n"
+				// JSON değilse, düz metin olarak yazdır
+				pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgLightCyan)).Println(aracCagrisiJSON)
+				conversationHistory += "Asistan: " + aracCagrisiJSON + "\n"
 			}
 		} else {
-			// AI'nin yanlışlıkla "Asistan:" ön ekini eklemesi durumunu temizle
-			cleanResponse := strings.TrimSpace(responseStr)
+			cleanResponse := strings.TrimSpace(finalResponseStr)
 			cleanResponse = strings.TrimPrefix(cleanResponse, "Asistan:")
 			cleanResponse = strings.TrimSpace(cleanResponse)
 

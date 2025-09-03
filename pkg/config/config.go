@@ -10,9 +10,18 @@ import (
 // Config, uygulamanın tüm yapılandırmasını tutar.
 type Config struct {
 	Ollama struct {
-		Model string `yaml:"model"`
-		URL   string `yaml:"url"`
+		Model          string `yaml:"model"`
+		EmbeddingModel string `yaml:"embedding_model"`
+		URL            string `yaml:"url"`
 	} `yaml:"ollama"`
+	Chroma struct {
+		URL                 string  `yaml:"url"`
+		CollectionName      string  `yaml:"collection_name"`
+		SimilarityThreshold float64 `yaml:"similarity_threshold"`
+	} `yaml:"chroma"`
+	ExpertAPI struct {
+		APIKey string `yaml:"api_key"`
+	} `yaml:"expert_api"`
 }
 
 // LoadConfig, belirtilen yoldan yapılandırma dosyasını okur ve Config struct'ını doldurur.
