@@ -47,3 +47,47 @@ Asistan, sonsuz bir döngü içinde kullanıcıdan komut alır ve aşağıdaki m
   go build -o go-agent
   sudo cp go-agent /usr/local/bin/
   ```
+
+## 6. Sorun Giderme ve Yapılandırma Notları
+
+Bu bölüm, proje canlıya alındıktan sonra karşılaşılan sorunları ve kalıcı çözümlerini içerir.
+
+### ChromaDB Kurulumu ve Yönetimi
+
+Projenin hafıza mekanizması olarak kullandığı ChromaDB, bir Docker container'ı olarak çalışmaktadır.
+
+#### İlk Kurulum
+
+ChromaDB container'ını ilk defa oluşturmak ve başlatmak için aşağıdaki komut kullanılır. Bu komut, `go-agent-chroma` adında bir container oluşturur, 8000 portunu haritalar ve verilerin kalıcı olması için `chroma_data` adında bir volume kullanır:
+
+```bash
+docker run -d --name go-agent-chroma -p 8000:8000 -v chroma_data:/chroma/.chroma/index chromadb/chroma
+```
+
+#### Yeniden Başlatma
+
+Bilgisayar yeniden başlatıldıktan sonra durmuş olan ChromaDB container'ını tekrar başlatmak için `docker-compose` veya `docker run` komutlarına gerek yoktur. Sadece aşağıdaki komut yeterlidir:
+
+```bash
+docker start go-agent-chroma
+```
+
+### API ve Kod Değişiklikleri
+
+#### ChromaDB API v2 Entegrasyonu
+
+Geliştirme sırasında, kullanılan `chromadb/chroma` Docker imajının, Go kodunun başlangıçta kullandığı `v1` API'sini terk ettiği ve `v2` API'sine geçtiği tespit edildi. Sunucudan gelen `The v1 API is deprecated. Please use /v2 apis` hatası bu durumu ortaya çıkardı.
+
+Çözüm olarak, `pkg/memory/chroma.go` dosyasındaki tüm API çağrı yolları, aşağıdaki yeni yapıya uygun şekilde güncellendi:
+
+`/api/v2/tenants/default_tenant/databases/default_database/`
+
+Bu, `default_tenant` ve `default_database` varsayılan adları kullanılarak yapılmıştır.
+
+### Yapay Zeka Davranışsal Ayarlama (Prompt Engineering)
+
+Modelin istenmeyen davranışlarını (sohbet için araç kullanma, genel kültür soruları için `web_search` aracına başvurma) düzeltmek için bir dizi değişiklik yapıldı.
+
+1.  **Sistem Komutu (System Prompt) Güncellemeleri:** `cmd/go-agent/main.go` dosyasındaki `baseSystemPrompt` değişkeni, modelin ne zaman araç kullanıp ne zaman kendi bilgisine başvurması gerektiğini netleştiren katı kurallarla birkaç kez güncellendi.
+2.  **Araç Tanımlarının İyileştirilmesi:** `pkg/tools/tools.go` dosyasındaki `web_search` aracının tanımı ve örnekleri, modeli yanlış yönlendirdiği için güncellendi.
+3.  **`web_search` Aracının Kaldırılması:** Modelin `web_search` kullanma alışkanlığının çok güçlü olduğu görüldü. Bu nedenle, modeli kendi iç bilgeliğini kullanmaya zorlamak amacıyla, kullanıcı isteği üzerine `web_search` aracı `pkg/tools/tools.go` dosyasındaki `ToolRegistry`'den tamamen kaldırıldı.
