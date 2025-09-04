@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"go-agent/pkg/config"
@@ -28,12 +29,12 @@ func extractJSONObject(text string) string {
 	return text[startIndex : endIndex+1]
 }
 
-// handleToolCall, bir araç çağrısını yönetir, çalıştırır ve geçmişi kaydeder.
-func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJSON string) {
+// handleToolCall, bir araç çağrısını yönetir, çalıştırır, geçmişi kaydeder ve başarı durumunu döndürür.
+func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJSON string) bool {
 	if toolCall.ToolName == "" {
 		pterm.Error.Println("AI, bir araç çağırmaya çalıştı ancak hangisi olduğunu belirtmedi.")
 		*conversationHistory += "Asistan: [Hata: İsimsiz bir araç çağrı isteği alındı.]\n"
-		return
+		return false
 	}
 
 	if toolCall.ToolName == "run_command" {
@@ -48,7 +49,7 @@ func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJS
 	if !exists {
 		pterm.Error.Println("Bilinmeyen araç istendi:", toolCall.ToolName)
 		*conversationHistory += "Asistan: [Hata: Bilinmeyen bir araç istendi.]\n"
-		return
+		return false
 	}
 
 	msg := fmt.Sprintf("'%s' aracını şu parametrelerle çalıştırmayı onaylıyor musunuz: %v", tool.Name, toolCall.Params)
@@ -63,7 +64,7 @@ func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJS
 		if !exists {
 			pterm.Error.Println("run_shell_command için 'command' parametresi eksik.")
 			*conversationHistory += "Asistan: [Hata: 'command' parametresi eksik.]\n"
-			return
+			return false
 		}
 		if strings.Contains(commandToRun, "sudo") {
 			msg = pterm.Error.Sprintf("!!! AŞIRI TEHLİKELİ İŞLEM !!! '%s' komutunu 'sudo' ile çalıştırmak üzeresiniz. Bu, sisteminizde kalıcı değişiklikler yapabilir veya zarar verebilir. Emin misiniz?", commandToRun)
@@ -80,7 +81,7 @@ func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJS
 		pterm.Warning.Println("İşlem iptal edildi.")
 		turnHistory += "Araç-Sonucu: [Kullanıcı tarafından iptal edildi.]\n"
 		*conversationHistory += turnHistory
-		return
+		return false
 	}
 
 	result, err := tool.Execute(toolCall.Params)
@@ -88,11 +89,14 @@ func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJS
 	if err != nil {
 		pterm.Error.Println("Araç hatası:", err)
 		turnHistory += fmt.Sprintf("Araç-Sonucu: [Hata: %v]\n", err)
-	} else {
-		pterm.DefaultBox.WithTitle("Araç Çıktısı: " + tool.Name).Println(result)
-		turnHistory += "Araç-Sonucu: " + result + "\n"
+		*conversationHistory += turnHistory
+		return false
 	}
+
+	pterm.DefaultBox.WithTitle("Araç Çıktısı: " + tool.Name).Println(result)
+	turnHistory += "Araç-Sonucu: " + result + "\n"
 	*conversationHistory += turnHistory
+	return true
 }
 
 // formatExamples, veritabanından gelen örnekleri LLM'in anlayacağı bir formata dönüştürür.
@@ -120,25 +124,6 @@ func main() {
 	}
 
 	chromaClient := memory.NewChromaClient(cfg.Chroma.URL, cfg.Chroma.CollectionName)
-
-	// --- Test için Manuel Örnek Ekleme ---
-	pterm.Info.Println("Test için hafızaya manuel bir ders ekleniyor...")
-	goModReadRequest := "go.mod dosyasının içeriğini oku"
-	goModReadToolCall := `{"type":"tool_call","tool_call":{"tool_name":"read_file","params":{"path":"go.mod"}}}`
-	embedding, err := ollama.GenerateEmbedding(cfg.Ollama.URL, cfg.Ollama.EmbeddingModel, goModReadRequest)
-	if err != nil {
-		pterm.Warning.Printf("Test örneği için embedding oluşturulamadı: %v\n", err)
-	} else {
-		uuid := uuid.New().String()
-		err = chromaClient.Add(uuid, embedding, goModReadRequest, goModReadToolCall)
-		if err != nil {
-			pterm.Warning.Printf("Test örneği hafızaya eklenemedi: %v\n", err)
-		} else {
-			pterm.Success.Println("Test dersi hafızaya başarıyla eklendi.")
-		}
-	}
-	// ---------------------------------------
-
 	var conversationHistory string
 
 	pterm.DefaultBigText.WithLetters(pterm.NewLettersFromString("GO AGENT")).Render()
@@ -159,24 +144,52 @@ func main() {
 		toolPrompt := `SEN, bir uzman asistansın. Görevin, kullanıcı isteğini analiz edip, cevabını **İSTİSNASIZ OLARAK** aşağıda belirtilen JSON formatında vermektir. Başka HİÇBİR format, metin veya açıklama kullanma.
 
 # ZORUNLU ÇIKTI FORMATI
-Cevabın SADECE şu JSON yapısında olmalı:
+Cevabın SADECE ve HER ZAMAN aşağıdaki gibi iç içe geçmiş yapıda olmalı:
 {"type":"tool_call","tool_call":{"tool_name":"ARAÇ_ADI","params":{"PARAMETRE_ADI":"DEĞER"}}}
 
-# KURALLAR
-1. type alanı her zaman "tool_call" olmalıdır.
-2. tool_name alanı, sana verilen listedeki araçlardan biri olmalıdır (örneğin: run_shell_command).
-3. params nesnesi, o aracın gerektirdiği parametreleri içermelidir.
+# SIK YAPILAN HATA (BUNU YAPMA!)
+Aşağıdaki gibi düz bir yapı KULLANMA. Bu YANLIŞTIR ve programın çökmesine neden olur:
+` + "```json" + `
+// YANLIŞ ÖRNEK - DÜZ YAPI
+{
+  "type": "tool_call",
+  "tool_name": "run_shell_command",
+  "params": {}
+}
+` + "```" + `
+
+# DOĞRU YAPI
+` + "`tool_name`" + ` ve ` + "`params`" + ` alanları, her zaman ` + "`tool_call`" + ` adlı bir anahtarın İÇİNDE olmalıdır. Örnek:
+` + "```json" + `
+// DOĞRU ÖRNEK - İÇ İÇE YAPI
+{
+  "type": "tool_call",
+  "tool_call": {
+    "tool_name": "run_shell_command",
+    "params": {
+      "command": "ls -l"
+    }
+  }
+}
+` + "```" + `
 
 # ÖRNEK
 Kullanıcı İsteği: "bu dizini listele"
-SENİN CEVABIN: {"type":"tool_call","tool_call":{"tool_name":"list_directory","params":{"path":". "}}}
-`
+SENİN CEVABIN: {"type":"tool_call","tool_call":{"tool_name":"list_directory","params":{"file_path":"."}}}`
 
 		toolsListPrompt := tools.GenerateToolsPrompt()
 		baseSystemPrompt := fmt.Sprintf("%s\n\n%s", toolPrompt, toolsListPrompt)
 
+		var inTrainingMode = false
+		var lastRequestForTraining = ""
+		var lastSuccessfulJSONForTraining = ""
+
 		for {
-			pterm.DefaultBasicText.Print(pterm.LightYellow("Siz (Araç Modu): "))
+			promptPrefix := pterm.LightYellow("Siz (Araç Modu): ")
+			if inTrainingMode {
+				promptPrefix = pterm.LightMagenta("Siz (Eğitim Modu): ")
+			}
+			pterm.DefaultBasicText.Print(promptPrefix)
 			userInput, _ := reader.ReadString('\n')
 			userInput = strings.TrimSpace(userInput)
 
@@ -184,22 +197,83 @@ SENİN CEVABIN: {"type":"tool_call","tool_call":{"tool_name":"list_directory","p
 				break
 			}
 
-			// Hafızadan ilgili örnekleri bul
+			if userInput == "/eğit" {
+				if !inTrainingMode {
+					inTrainingMode = true
+					pterm.Info.Println("Eğitim modu başlatıldı. Lütfen öğretmek istediğiniz komutu girin.")
+					lastRequestForTraining = ""
+					lastSuccessfulJSONForTraining = ""
+					continue
+				} else {
+					if lastRequestForTraining != "" && lastSuccessfulJSONForTraining != "" {
+						pterm.Info.Println("Eğitim modu sonlandırılıyor. Ders hafızaya kaydediliyor...")
+						embedding, err := ollama.GenerateEmbedding(cfg.Ollama.URL, cfg.Ollama.EmbeddingModel, lastRequestForTraining)
+						if err != nil {
+							pterm.Warning.Printf("Hafızaya kaydetmek için embedding oluşturulamadı: %v\n", err)
+						} else {
+							uuid := uuid.New().String()
+							err = chromaClient.Add(uuid, embedding, lastRequestForTraining, lastSuccessfulJSONForTraining)
+							if err != nil {
+								pterm.Warning.Printf("Ders hafızaya eklenemedi: %v\n", err)
+							} else {
+								pterm.Success.Println("Yeni ders hafızaya başarıyla eklendi!")
+							}
+						}
+					} else {
+						pterm.Warning.Println("Kaydedilecek başarılı bir komut bulunamadı. Eğitim modu iptal edildi.")
+					}
+					inTrainingMode = false
+					lastRequestForTraining = ""
+					lastSuccessfulJSONForTraining = ""
+					continue
+				}
+			}
+
+			if userInput == "/showmemory" {
+				pterm.Info.Println("Hafızadaki tüm dersler getiriliyor...")
+				examples, err := chromaClient.GetAllExamples()
+				if err != nil {
+					pterm.Error.Printf("Hafıza alınamadı: %v\n", err)
+					continue
+				}
+
+				if len(examples) == 0 {
+					pterm.Info.Println("Hafıza boş.")
+					continue
+				}
+
+				pterm.Info.Printf("%d adet ders bulundu:\n", len(examples))
+				for i, ex := range examples {
+					boxTitle := fmt.Sprintf("Ders #%d", i+1)
+					userRequest := ex["user_request"]
+					toolCallJSON := ex["tool_call_json"]
+
+					var prettyJSON bytes.Buffer
+					if err := json.Indent(&prettyJSON, []byte(toolCallJSON), "", "  "); err != nil {
+						prettyJSON.WriteString(toolCallJSON)
+					}
+
+					content := fmt.Sprintf("Kullanıcı İsteği: %s\nDoğru Komut:\n%s", userRequest, prettyJSON.String())
+					pterm.DefaultBox.WithTitle(boxTitle).Println(content)
+				}
+				continue
+			}
+
+			// Normal veya Eğitim modunda komut işleme
 			inputEmbedding, err := ollama.GenerateEmbedding(cfg.Ollama.URL, cfg.Ollama.EmbeddingModel, userInput)
 			var examplesText string
 			if err != nil {
 				pterm.Warning.Println("Girdi için embedding oluşturulamadı, hafıza sorgulanamıyor.")
 			} else {
-				examples, err := chromaClient.QueryExamples(inputEmbedding, 2, 1.5) // 2 örnek al, eşik değeri 1.5 (deneme)
+				examples, distances, err := chromaClient.QueryExamples(inputEmbedding, 2)
 				if err != nil {
 					pterm.Warning.Printf("Hafıza sorgulanırken hata oluştu: %v\n", err)
 				} else if len(examples) > 0 {
 					examplesText = formatExamples(examples)
-					pterm.Info.Printf("%d adet benzer örnek hafızadan bulundu ve prompt'a eklendi.\n", len(examples))
+					pterm.Info.Printf("%d adet benzer örnek hafızadan bulundu (mesafeler: %.4f) ve prompt'a eklendi.\n", len(examples), distances)
 				}
 			}
 
-			// Mevcut çalışma dizinini al
 			cwd, err := os.Getwd()
 			if err != nil {
 				pterm.Warning.Printf("Mevcut çalışma dizini alınamadı: %v\n", err)
@@ -207,21 +281,25 @@ SENİN CEVABIN: {"type":"tool_call","tool_call":{"tool_name":"list_directory","p
 			}
 
 			conversationHistory += "Kullanıcı: " + userInput + "\n"
-			finalPrompt := fmt.Sprintf("%s\n%s\n\n# MEVCUT ÇALIŞMA DİZİNİ\n%s\n\n--- Önceki Konuşma ---\n%s\n---------------------\n\nKullanıcı İsteği: %s", baseSystemPrompt, examplesText, cwd, conversationHistory, userInput)
+			finalPrompt := fmt.Sprintf(`%s\n%s\n\n# MEVCUT ÇALIŞMA DİZİNİ\n%s\n\n--- Önceki Konuşma ---\n%s\n---------------------\n\nKullanıcı İsteği: %s`, baseSystemPrompt, examplesText, cwd, conversationHistory, userInput)
 
 			spinner, _ := pterm.DefaultSpinner.Start("Uzman AI düşünüyor...")
 			responseStr, err := ollama.Generate(cfg.Ollama.URL, cfg.Ollama.Model, finalPrompt)
+			spinner.Stop()
 			if err != nil {
-				spinner.Fail(fmt.Sprintf("Ollama'dan cevap alınamadı: %v", err))
+				pterm.Error.Printf("Ollama'dan cevap alınamadı: %v", err)
 				continue
 			}
-			spinner.Success("Cevap alındı!")
 
 			jsonStr := extractJSONObject(responseStr)
 			if jsonStr == "" {
 				pterm.Warning.Println("AI'nın cevabında geçerli bir JSON bloğu bulunamadı. Ham cevap:")
 				pterm.Println(responseStr)
 				conversationHistory += "Asistan: [Hata: JSON bulunamadı] " + responseStr + "\n"
+				if inTrainingMode {
+					pterm.Warning.Println("Eğitim modunda komut başarısız oldu. Moddan çıkılıyor.")
+					inTrainingMode = false
+				}
 				continue
 			}
 
@@ -231,17 +309,33 @@ SENİN CEVABIN: {"type":"tool_call","tool_call":{"tool_name":"list_directory","p
 				pterm.Warning.Printf("AI geçerli bir JSON formatında cevap vermedi. Hata: %v\nHam Cevap:", err)
 				pterm.Println(responseStr)
 				conversationHistory += "Asistan: [Hata: Geçersiz JSON] " + responseStr + "\n"
+				if inTrainingMode {
+					pterm.Warning.Println("Eğitim modunda komut başarısız oldu. Moddan çıkılıyor.")
+					inTrainingMode = false
+				}
 				continue
 			}
 
 			if aiResponse.ToolCall.ToolName != "" {
-				// The AI provided a tool_call object, which is what we want in Tool Mode.
-				handleToolCall(aiResponse.ToolCall, &conversationHistory, jsonStr)
+				isSuccess := handleToolCall(aiResponse.ToolCall, &conversationHistory, jsonStr)
+				if inTrainingMode {
+					if isSuccess {
+						lastRequestForTraining = userInput
+						lastSuccessfulJSONForTraining = jsonStr
+						pterm.Success.Println("Eğitim komutu başarıyla çalıştı. Kaydetmek için tekrar /eğit komutunu girin.")
+					} else {
+						pterm.Warning.Println("Eğitim sırasında komut başarısız oldu. Moddan çıkılıyor.")
+						inTrainingMode = false
+					}
+				}
 			} else {
-				// The JSON was valid, but it wasn't a tool_call or was missing a tool_name.
 				pterm.Error.Println("AI geçerli bir araç çağrısı döndürmedi. Yanıt Tipi:", aiResponse.Type)
-				pterm.Warning.Println("Alınan JSON:", jsonStr) // Hata ayıklama için eklendi
+				pterm.Warning.Println("Alınan JSON:", jsonStr)
 				conversationHistory += "Asistan: [Hata: Geçersiz araç çağrısı] " + jsonStr + "\n"
+				if inTrainingMode {
+					pterm.Warning.Println("Eğitim modunda komut başarısız oldu. Moddan çıkılıyor.")
+					inTrainingMode = false
+				}
 			}
 		}
 
@@ -257,7 +351,6 @@ SENİN CEVABIN: {"type":"tool_call","tool_call":{"tool_name":"list_directory","p
 				break
 			}
 
-			// Mevcut çalışma dizinini al (sohbet modunda da bağlam için faydalı olabilir)
 			cwd, err := os.Getwd()
 			if err != nil {
 				pterm.Warning.Printf("Mevcut çalışma dizini alınamadı: %v\n", err)
@@ -265,15 +358,15 @@ SENİN CEVABIN: {"type":"tool_call","tool_call":{"tool_name":"list_directory","p
 			}
 
 			conversationHistory += "Kullanıcı: " + userInput + "\n"
-			finalPrompt := fmt.Sprintf("%s\n\n# MEVCUT ÇALIŞMA DİZİNİ\n%s\n\n--- Önceki Konuşma ---\n%s\n---------------------\n\nKullanıcı İsteği: %s", chatPrompt, cwd, conversationHistory, userInput)
+			finalPrompt := fmt.Sprintf(`%s\n\n# MEVCUT ÇALIŞMA DİZİNİ\n%s\n\n--- Önceki Konuşma ---\n%s\n---------------------\n\nKullanıcı İsteği: %s`, chatPrompt, cwd, conversationHistory, userInput)
 
 			spinner, _ := pterm.DefaultSpinner.Start("AI düşünüyor...")
 			responseStr, err := ollama.Generate(cfg.Ollama.URL, cfg.Ollama.Model, finalPrompt)
+			spinner.Stop()
 			if err != nil {
-				spinner.Fail(fmt.Sprintf("Ollama'dan cevap alınamadı: %v", err))
+				pterm.Error.Printf("Ollama'dan cevap alınamadı: %v", err)
 				continue
 			}
-			spinner.Success("Cevap alındı!")
 
 			cleanResponse := strings.TrimSpace(responseStr)
 			pterm.DefaultBasicText.Println(pterm.LightGreen(cleanResponse))
