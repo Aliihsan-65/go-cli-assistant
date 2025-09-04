@@ -11,25 +11,29 @@ import (
 	"github.com/pterm/pterm"
 )
 
+// Chroma'ya veri ekleme isteği için kullanılan yapı
 type ChromaAddRequest struct {
 	IDs        []string            `json:"ids"`
 	Embeddings [][]float32         `json:"embeddings"`
 	Metadatas  []map[string]string `json:"metadatas"`
-	Documents  []string            `json:"documents"`
+	Documents  []string            `json:"documents" // Anlamsal aramanın yapılacağı metin`
 }
 
+// Chroma'dan veri sorgulama isteği için kullanılan yapı
 type ChromaQueryRequest struct {
 	QueryEmbeddings [][]float32 `json:"query_embeddings"`
 	NResults        int         `json:"n_results"`
+	Include         []string    `json:"include" // "metadatas" ve "distances" alanlarını getirmek için`
 }
 
+// Chroma sorgu cevabı için kullanılan yapı
 type ChromaQueryResponse struct {
 	IDs       [][]string            `json:"ids"`
 	Distances [][]float64           `json:"distances"`
 	Metadatas [][]map[string]string `json:"metadatas"`
-	Documents [][]string            `json:"documents"`
 }
 
+// Koleksiyon oluşturma ve alma için kullanılan yapılar
 type ChromaCreateCollectionRequest struct {
 	Name string `json:"name"`
 }
@@ -39,6 +43,7 @@ type ChromaGetCollectionResponse struct {
 	Name string `json:"name"`
 }
 
+// ChromaClient, ChromaDB ile etkileşim için istemci
 type ChromaClient struct {
 	BaseURL        string
 	CollectionName string
@@ -46,6 +51,7 @@ type ChromaClient struct {
 	HTTPClient     *http.Client
 }
 
+// NewChromaClient, yeni bir ChromaClient oluşturur ve koleksiyonun varlığını garantiler.
 func NewChromaClient(baseURL, collectionName string) *ChromaClient {
 	client := &ChromaClient{
 		BaseURL:        baseURL,
@@ -58,7 +64,9 @@ func NewChromaClient(baseURL, collectionName string) *ChromaClient {
 	return client
 }
 
+// ensureCollectionExists, ChromaDB'de belirtilen koleksiyonun var olup olmadığını kontrol eder, yoksa oluşturur.
 func (c *ChromaClient) ensureCollectionExists() error {
+	// Doğru v2 API yolunu kullan
 	createURL := c.BaseURL + "/api/v2/tenants/default_tenant/databases/default_database/collections"
 	reqBody := ChromaCreateCollectionRequest{Name: c.CollectionName}
 	jsonData, err := json.Marshal(reqBody)
@@ -83,14 +91,12 @@ func (c *ChromaClient) ensureCollectionExists() error {
 		pterm.Success.Printf("Hafıza koleksiyonu '%s' başarıyla oluşturuldu veya doğrulandı.\n", c.CollectionName)
 	case http.StatusConflict:
 		pterm.Info.Printf("Hafıza koleksiyonu '%s' zaten mevcut.\n", c.CollectionName)
-	case http.StatusInternalServerError:
+	default:
 		if strings.Contains(responseBody, "already exists") {
-			pterm.Info.Printf("Hafıza koleksiyonu '%s' zaten mevcut (500 hatasıyla tespit edildi).\n", c.CollectionName)
+			pterm.Info.Printf("Hafıza koleksiyonu '%s' zaten mevcut (sunucu hatasıyla tespit edildi).\n", c.CollectionName)
 		} else {
 			return fmt.Errorf("koleksiyon oluşturulamadı, durum: %s, cevap: %s", resp.Status, responseBody)
 		}
-	default:
-		return fmt.Errorf("beklenmedik durum, kod: %d, cevap: %s", resp.StatusCode, responseBody)
 	}
 
 	getURL := c.BaseURL + "/api/v2/tenants/default_tenant/databases/default_database/collections/" + c.CollectionName
@@ -119,13 +125,15 @@ func (c *ChromaClient) ensureCollectionExists() error {
 	return nil
 }
 
-func (c *ChromaClient) Add(id string, embedding []float32, document string) error {
+// Add, bir "dersi" (kullanıcı isteği ve doğru JSON komutu) veritabanına ekler.
+func (c *ChromaClient) Add(id string, embedding []float32, userRequest string, toolCallJSON string) error {
 	url := c.BaseURL + "/api/v2/tenants/default_tenant/databases/default_database/collections/" + c.CollectionID + "/add"
 
 	reqBody := ChromaAddRequest{
 		IDs:        []string{id},
 		Embeddings: [][]float32{embedding},
-		Metadatas:  []map[string]string{{"document": document}},
+		Documents:  []string{userRequest},
+		Metadatas:  []map[string]string{{"user_request": userRequest, "tool_call_json": toolCallJSON}},
 	}
 
 	jsonData, err := json.Marshal(reqBody)
@@ -139,56 +147,59 @@ func (c *ChromaClient) Add(id string, embedding []float32, document string) erro
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("add cevap gövdesi okunamadı: %w", err)
-	}
-	responseBody := string(bodyBytes)
-
-	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("hafızaya eklenemedi, durum: %s, cevap: %s", resp.Status, responseBody)
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("hafızaya eklenemedi, durum: %s, cevap: %s", resp.Status, string(body))
 	}
 
 	return nil
 }
 
-func (c *ChromaClient) Query(embedding []float32, topN int, threshold float64) (string, error) {
+// QueryExamples, anlamsal olarak en yakın "dersleri" veritabanından çeker.
+func (c *ChromaClient) QueryExamples(embedding []float32, topN int, threshold float64) ([]map[string]string, error) {
 	url := c.BaseURL + "/api/v2/tenants/default_tenant/databases/default_database/collections/" + c.CollectionID + "/query"
 
 	reqBody := ChromaQueryRequest{
 		QueryEmbeddings: [][]float32{embedding},
 		NResults:        topN,
+		Include:         []string{"metadatas", "distances"},
 	}
 
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("query isteği JSON'a çevrilemedi: %w", err)
+		return nil, fmt.Errorf("query isteği JSON'a çevrilemedi: %w", err)
 	}
 
 	resp, err := c.HTTPClient.Post(url, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
-		return "", fmt.Errorf("query API hatası: %w", err)
+		return nil, fmt.Errorf("query API hatası: %w", err)
 	}
 	defer resp.Body.Close()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("query cevap gövdesi okunamadı: %w", err)
+		return nil, fmt.Errorf("query cevap gövdesi okunamadı: %w", err)
 	}
-	responseBody := string(bodyBytes)
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("hafıza sorgulanamadı, durum: %s, cevap: %s", resp.Status, responseBody)
+		return nil, fmt.Errorf("hafıza sorgulanamadı, durum: %s, cevap: %s", resp.Status, string(bodyBytes))
 	}
 
 	var queryResp ChromaQueryResponse
 	if err := json.Unmarshal(bodyBytes, &queryResp); err != nil {
-		return "", fmt.Errorf("hafıza cevabı çözümlenemedi: %w, Gelen Cevap: %s", err, responseBody)
+		return nil, fmt.Errorf("hafıza cevabı çözümlenemedi: %w, Gelen Cevap: %s", err, string(bodyBytes))
 	}
 
-	if len(queryResp.IDs) > 0 && len(queryResp.IDs[0]) > 0 && len(queryResp.Distances) > 0 && len(queryResp.Distances[0]) > 0 && queryResp.Distances[0][0] < (1-threshold) {
-		return queryResp.Metadatas[0][0]["document"], nil
+	if queryResp.Metadatas == nil || len(queryResp.Metadatas) == 0 || len(queryResp.Metadatas[0]) == 0 {
+		return []map[string]string{}, nil
 	}
 
-	return "", nil
+	var filteredResults []map[string]string
+	for i, metadata := range queryResp.Metadatas[0] {
+		if queryResp.Distances[0][i] < threshold {
+			filteredResults = append(filteredResults, metadata)
+		}
+	}
+
+	return filteredResults, nil
 }

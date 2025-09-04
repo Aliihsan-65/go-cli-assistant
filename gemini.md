@@ -1,93 +1,56 @@
-# Go Agent Projesi: Gemini ile Geliştirme Serüveni
+# Go-Agent Gelişmiş Hafıza Mimarisi: "Akıl Hocası" Modeli
 
-Bu dosya, Gemini ile birlikte sıfırdan geliştirdiğimiz `go-agent` adlı yapay zeka asistanının tüm geliştirme sürecini, karşılaşılan zorlukları ve öğrenilenleri belgelemektedir.
+## 1. Tespit Edilen Sorun ve Amaç
 
-## 1. Projenin Amacı
+Basit bir vektör veritabanı önbelleği (cache), anlamsal olarak birbirine çok benzeyen ancak kritik parametreleri (IP adresi, port, dosya adı vb.) farklı olan isteklerde tehlikeli bir şekilde hatalı davranabilir. Örneğin, "8.8.8.8 port 80'i tara" komutunu hafızaya aldıktan sonra, "8.8.8.8 port 443'ü tara" isteği geldiğinde, anlamsal benzerlikten ötürü hafızadaki eski komutu döndürerek yanlış portun taranmasına neden olabilir.
 
-Projenin temel amacı, kullanıcının yerel makinesinde çalışan, terminal üzerinden komut alabilen, dosya sistemi üzerinde (listeleme, okuma, yazma) işlemler yapabilen ve bu işlemleri yapmadan önce kullanıcıdan onay alan, Go dilinde yazılmış bir yapay zeka asistanı oluşturmaktı.
+Asıl amaç, basit bir önbellek mekanizması kurmak değil, yapay zekayı zamanla **eğitmek ve düzeltmektir**. Kullanıcı, yapay zekanın bir hatasını düzelttiğinde veya başarılı bir sonucunu onayladığında, bu "dersin" sisteme kaydedilerek gelecekteki benzer görevlerde daha doğru sonuçlar üretmesi hedeflenmektedir.
 
-## 2. Kullanılan Teknolojiler
+## 2. Çözüm: "Akıl Hocası" (Few-Shot Learning) Yaklaşımı
 
-- **Programlama Dili:** Go
-- **LLM Altyapısı:** Ollama
-- **Kullanılan Modeller:** `gemma3`, `deepseek-r1:8b`
-- **Terminal Arayüzü (TUI):** `pterm` kütüphanesi
+Bu hedefi gerçekleştirmek için vektör veritabanı (ChromaDB), bir cevap deposu olarak değil, bir **başarılı örnekler deposu** olarak kullanılacaktır. Yapay zeka (LLM) karar mekanizmasından tamamen çıkarılmaz, aksine geçmişteki başarılı örneklerle beslenerek daha doğru kararlar vermesi sağlanır.
 
-## 3. Çalışma Mantığı
+### Çalışma Mimarisi
 
-Asistan, sonsuz bir döngü içinde kullanıcıdan komut alır ve aşağıdaki mantıkla çalışır:
+1.  **Hafızaya Kaydetme (Öğretme):**
+    Kullanıcı, bir araç çağrısının sonucundan memnun kaldığında, bu işlemi hafızaya kaydeder. Her kayıt, iki temel bilgiyi içerir:
+    *   **Kullanıcı İsteği:** Komutun verilmesine neden olan orijinal, doğal dil metni (örn: "verbose modda detaylı bir nmap taraması yap").
+    *   **Doğru JSON Çıktısı:** Bu istek için üretilmiş olan doğru ve tam JSON araç çağrısı (örn: `{"type":"tool_call","tool_call":{"tool_name":"run_shell_command","params":{"command":"nmap -A -vvv ..."}}}`).
 
-1.  **System Prompt (Sistem Talimatı):** Her kullanıcı girdisi, LLM'e gönderilmeden önce, ona rolünü, yeteneklerini, kurallarını ve elindeki araçları tanımlayan büyük bir talimat metniyle birleştirilir.
-2.  **Araçlar (Tools):** `list_directory`, `read_file`, `write_file` gibi yetenekler, Go içinde normal fonksiyonlar olarak tanımlanmıştır.
-3.  **JSON ile İletişim:** LLM, bir aracı kullanmaya karar verdiğinde, sohbet etmek yerine, hangi aracı hangi parametrelerle kullanmak istediğini belirten bir JSON metni döndürür.
-4.  **Akıllı Ayrıştırma:** Go programı, LLM'den gelen cevabın içinde bir JSON bloğu arar. Eğer bulursa, bunu bir araç çağrısı olarak işler. Bulamazsa, normal bir sohbet mesajı olarak kabul eder.
-5.  **Hafıza (Conversation History):** Program, konuşma geçmişini (kullanıcı girdileri ve asistan cevapları) bir değişkende tutar. Bir sonraki komutta bu geçmişi de LLM'e göndererek, asistanın önceki konuşmalardaki bağlamı hatırlaması sağlanır. Araç kullanıldığında, hafızaya ham JSON yerine, daha anlaşılır bir özet kaydedilir.
-6.  **Görsel Arayüz:** `pterm` kütüphanesi kullanılarak, bekleme animasyonları (spinner), renkli ve ikonlu bilgilendirme/hata mesajları, kutu içinde çıktılar ve interaktif onay mekanizmaları ile kullanıcı deneyimi zenginleştirilmiştir.
+2.  **Hafızadan Faydalanma (Öğrenme ve Uygulama):**
+    *   Kullanıcı "Araç Modu"nda yeni bir istekte bulunduğunda, sistem bu isteği vektöre çevirerek ChromaDB'de anlamsal olarak en yakın bir veya birkaç kayıtlı örneği bulur.
+    *   Bulunan bu başarılı örnekler, o anki görev için LLM'e gönderilecek olan sistem talimatına (prompt) dinamik olarak eklenir.
 
-## 4. Geliştirme Sürecinde Öğrenilenler
+3.  **Yönlendirilmiş Prompt Yapısı:**
+    LLM'e gönderilen son talimat şu yapıda olur:
 
-- **Prompt Engineering'in Önemi:** LLM'in davranışını yönlendirmenin en etkili yolunun `systemPrompt`'u doğru ve net bir şekilde yazmak olduğu görüldü. Denge çok önemliydi:
-    - Çok katı talimatlar, LLM'in sohbet yeteneğini kaybetmesine neden oldu.
-    - Çok esnek talimatlar, LLM'in araçları kullanmak yerine halüsinasyon görmesine (görevi yaptığını iddia etmesine) neden oldu.
-    - Parametre çıkarımı için talimatlara net örnekler (`Örneğin: ...`) eklemenin modelin performansını ciddi şekilde artırdığı gözlemlendi.
-- **Hafıza Yönetimi:** Stateless (hafızasız) bir asistanın kullanışlı olmadığı anlaşıldı. Konuşma geçmişi eklendi. Daha sonra, bu geçmişe ham JSON yerine, işlenmiş özetlerin eklenmesinin, LLM'in bağlamı daha iyi anlamasına yardımcı olduğu keşfedildi.
-- **Go Dilinin İncelikleri:** Geliştirme sırasında `switch-case` bloklarındaki değişken kapsamı (scope) kuralları ve `string` (metin) oluşturma kuralları gibi Go diline özgü syntax yapıları üzerinde pratik yapıldı ve hatalar düzeltildi.
-- **Kütüphane Kullanımı:** `pterm` gibi harici bir kütüphaneyi kullanırken, dokümantasyonuna veya doğru kullanım şekline hakim olmanın ne kadar önemli olduğu, deneme-yanılma yoluyla tecrübe edildi.
+    ```
+    SEN, bir siber güvenlik uzmanısın... (Ana kurallar)
 
-## 5. Kurulum ve Çalıştırma
+    # BAŞARILI ÖRNEKLER
+    # Geçmişte doğru olarak çözülmüş bu örneklerden öğrenerek yeni görevi tamamla.
+    # Örnek 1:
+    #   Kullanıcı İsteği: "verbose tarama yap"
+    #   Üretilen Doğru Komut: {"type":"tool_call", ... "command":"nmap -v ..."}
 
-- **Geliştirme Ortamında Çalıştırma:**
-  ```bash
-  cd /home/un1c4on/go-agent
-  go run main.go
-  ```
-- **Sistem Geneli Komut Olarak Kurma:**
-  ```bash
-  cd /home/un1c4on/go-agent
-  go build -o go-agent
-  sudo cp go-agent /usr/local/bin/
-  ```
+    # YENİ GÖREV
+    # Yukarıdaki başarılı örneklerden yola çıkarak, aşağıdaki yeni kullanıcı isteği için doğru JSON komutunu üret:
+    # Yeni Kullanıcı İsteği: "192.168.1.1 için çok verbose bir tarama yap"
+    ```
 
-## 6. Sorun Giderme ve Yapılandırma Notları
+### Sonuç ve Faydalar
 
-Bu bölüm, proje canlıya alındıktan sonra karşılaşılan sorunları ve kalıcı çözümlerini içerir.
+*   **Parametre Ezme Sorunu Çözülür:** LLM, eski örneğe bakarak `verbose` için `-v` kullanması gerektiğini öğrenir, ancak **yeni isteği** de okuyarak hedef IP'yi doğru şekilde günceller. Körü körüne eski komutu kopyalamaz.
+*   **Sürekli Öğrenme:** Sistem, her başarılı ve kaydedilmiş işlemle daha akıllı hale gelir.
+*   **Güvenilirlik:** Hafıza, körü körüne cevap veren bir mekanizma yerine, LLM'e yol gösteren bir **akıl hocası** görevi görür.
 
-### ChromaDB Kurulumu ve Yönetimi
+## 3. Teknik Notlar
 
-Projenin hafıza mekanizması olarak kullandığı ChromaDB, bir Docker container'ı olarak çalışmaktadır.
+### ChromaDB API Versiyon Notu
 
-#### İlk Kurulum
+Proje, modern bir ChromaDB versiyonu ile çalışacak şekilde ayarlanmıştır. Bu versiyon, daha spesifik ve `tenant`/`database` içeren `/api/v2/` API yollarını kullanmayı gerektirir.
 
-ChromaDB container'ını ilk defa oluşturmak ve başlatmak için aşağıdaki komut kullanılır. Bu komut, `go-agent-chroma` adında bir container oluşturur, 8000 portunu haritalar ve verilerin kalıcı olması için `chroma_data` adında bir volume kullanır:
+- **Kullanılması Gereken API Yolu Yapısı:** `/api/v2/tenants/{tenant}/databases/{database}/collections`
+- **Varsayılan Değerler:** Kod içinde `tenant` için `default_tenant` ve `database` için `default_database` kullanılmaktadır.
 
-```bash
-docker run -d --name go-agent-chroma -p 8000:8000 -v chroma_data:/chroma/.chroma/index chromadb/chroma
-```
-
-#### Yeniden Başlatma
-
-Bilgisayar yeniden başlatıldıktan sonra durmuş olan ChromaDB container'ını tekrar başlatmak için `docker-compose` veya `docker run` komutlarına gerek yoktur. Sadece aşağıdaki komut yeterlidir:
-
-```bash
-docker start go-agent-chroma
-```
-
-### API ve Kod Değişiklikleri
-
-#### ChromaDB API v2 Entegrasyonu
-
-Geliştirme sırasında, kullanılan `chromadb/chroma` Docker imajının, Go kodunun başlangıçta kullandığı `v1` API'sini terk ettiği ve `v2` API'sine geçtiği tespit edildi. Sunucudan gelen `The v1 API is deprecated. Please use /v2 apis` hatası bu durumu ortaya çıkardı.
-
-Çözüm olarak, `pkg/memory/chroma.go` dosyasındaki tüm API çağrı yolları, aşağıdaki yeni yapıya uygun şekilde güncellendi:
-
-`/api/v2/tenants/default_tenant/databases/default_database/`
-
-Bu, `default_tenant` ve `default_database` varsayılan adları kullanılarak yapılmıştır.
-
-### Yapay Zeka Davranışsal Ayarlama (Prompt Engineering)
-
-Modelin istenmeyen davranışlarını (sohbet için araç kullanma, genel kültür soruları için `web_search` aracına başvurma) düzeltmek için bir dizi değişiklik yapıldı.
-
-1.  **Sistem Komutu (System Prompt) Güncellemeleri:** `cmd/go-agent/main.go` dosyasındaki `baseSystemPrompt` değişkeni, modelin ne zaman araç kullanıp ne zaman kendi bilgisine başvurması gerektiğini netleştiren katı kurallarla birkaç kez güncellendi.
-2.  **Araç Tanımlarının İyileştirilmesi:** `pkg/tools/tools.go` dosyasındaki `web_search` aracının tanımı ve örnekleri, modeli yanlış yönlendirdiği için güncellendi.
-3.  **`web_search` Aracının Kaldırılması:** Modelin `web_search` kullanma alışkanlığının çok güçlü olduğu görüldü. Bu nedenle, modeli kendi iç bilgeliğini kullanmaya zorlamak amacıyla, kullanıcı isteği üzerine `web_search` aracı `pkg/tools/tools.go` dosyasındaki `ToolRegistry`'den tamamen kaldırıldı.
+**Önemli Not:** Program başlangıcında `405 Method Not Allowed` hatası alınırsa, bu durum büyük ihtimalle `pkg/memory/chroma.go` dosyasındaki API yollarının yanlış olduğunu gösterir. Yolların yukarıda belirtilen `v2` yapısını kullandığından emin olunmalıdır. `/api/v1/collections` gibi daha eski veya genel yollar bu hataya neden olmaktadır.

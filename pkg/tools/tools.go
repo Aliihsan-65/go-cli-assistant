@@ -5,31 +5,22 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 )
 
 // Tool, bir aracı ve onunla ilgili AI'ya yol gösterecek meta verileri tanımlar.
 type Tool struct {
 	Name        string
 	Description string
-	// Triggers    []string // Bu aracı düşünmesini tetikleyecek anahtar konular/fiiller
-	Examples []string // Tam kullanım örnekleri
-
-	Execute func(params map[string]string) (string, error)
+	Execute     func(params map[string]string) (string, error)
 }
 
-// ToolRegistry, sistemdeki tüm araçları zenginleştirilmiş tanımlarıyla birlikte tutar.
+// ToolRegistry, sistemdeki tüm araçları tanımlarıyla birlikte tutar.
 var ToolRegistry = map[string]Tool{
-	
 	"list_directory": {
 		Name:        "list_directory",
-		Description: "YALNIZCA bir dosya sistemi dizinindeki dosyaları ve klasörleri listelemek için kullanılır. Genel soruları yanıtlamak için KULLANMA.",
-		Examples: []string{
-			"Kullanıcı: bu dizindeki dosyaları göster -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"list_directory\",\"params\":{\"path\":\".\"}}}<arac_cagrisi>",
-			"Kullanıcı: cmd klasöründe ne var? -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"list_directory\",\"params\":{\"path\":\"cmd\"}}}<arac_cagrisi>",
-		},
+		Description: "Belirtilen bir dosya sistemi dizinindeki dosyaları ve klasörleri listeler. Parametreler: { \"file_path\": \"string\" }",
 		Execute: func(params map[string]string) (string, error) {
-			path := params["path"]
+			path := params["file_path"]
 			if path == "" {
 				path = "."
 			}
@@ -50,13 +41,9 @@ var ToolRegistry = map[string]Tool{
 	},
 	"read_file": {
 		Name:        "read_file",
-		Description: "YALNIZCA yerel dosya sistemindeki belirli bir dosyanın içeriğini okumak için kullanılır.",
-		Examples: []string{
-			"Kullanıcı: deneme.txt dosyasını oku -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"read_file\",\"params\":{\"path\":\"deneme.txt\"}}}<arac_cagrisi>",
-			"Kullanıcı: config.yaml içeriği nedir? -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"read_file\",\"params\":{\"path\":\"config.yaml\"}}}<arac_cagrisi>",
-		},
+		Description: "Belirtilen bir dosyanın içeriğini okur. Parametreler: { \"file_path\": \"string\" }",
 		Execute: func(params map[string]string) (string, error) {
-			path := params["path"]
+			path := params["file_path"]
 			if path == "" {
 				return "", fmt.Errorf("dosya yolu belirtilmedi")
 			}
@@ -69,12 +56,9 @@ var ToolRegistry = map[string]Tool{
 	},
 	"write_file": {
 		Name:        "write_file",
-		Description: "YALNIZCA yerel dosya sistemindeki belirli bir dosyaya içerik yazar. DİKKAT: Dosyanın üzerine tamamen yazar.",
-		Examples: []string{
-			"Kullanıcı: yeni.txt dosyasına 'merhaba dünya' yaz -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"write_file\",\"params\":{\"path\":\"yeni.txt\",\"content\":\"merhaba dünya\"}}}<arac_cagrisi>",
-		},
+		Description: "Belirtilen bir dosyaya içerik yazar. DİKKAT: Dosyanın üzerine tamamen yazar. Parametreler: { \"file_path\": \"string\", \"content\": \"string\" }",
 		Execute: func(params map[string]string) (string, error) {
-			path := params["path"]
+			path := params["file_path"]
 			content := params["content"]
 			if path == "" {
 				return "", fmt.Errorf("dosya yolu belirtilmedi")
@@ -88,12 +72,9 @@ var ToolRegistry = map[string]Tool{
 	},
 	"append_file": {
 		Name:        "append_file",
-		Description: "YALNIZCA yerel dosya sistemindeki belirli bir dosyanın sonuna içerik ekler.",
-		Examples: []string{
-			"Kullanıcı: deneme.txt sonuna '789' ekle -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"append_file\",\"params\":{\"path\":\"deneme.txt\",\"content\":\"789\"}}}<arac_cagrisi>",
-		},
+		Description: "Belirtilen bir dosyanın sonuna içerik ekler. Parametreler: { \"file_path\": \"string\", \"content\": \"string\" }",
 		Execute: func(params map[string]string) (string, error) {
-			path := params["path"]
+			path := params["file_path"]
 			content := params["content"]
 			if path == "" {
 				return "", fmt.Errorf("dosya yolu belirtilmedi")
@@ -111,10 +92,7 @@ var ToolRegistry = map[string]Tool{
 	},
 	"run_shell_command": {
 		Name:        "run_shell_command",
-		Description: "YALNIZCA bir terminal komutunu (shell command) çalıştırmak için kullanılır.",
-		Examples: []string{
-			"Kullanıcı: go versiyonunu çalıştır -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"run_shell_command\",\"params\":{\"command\":\"go version\"}}}<arac_cagrisi>",
-		},
+		Description: "Bir terminal komutunu (shell command) çalıştırır. Parametreler: { \"command\": \"string\" }",
 		Execute: func(params map[string]string) (string, error) {
 			command := params["command"]
 			if command == "" {
@@ -127,32 +105,17 @@ var ToolRegistry = map[string]Tool{
 			return string(out), nil
 		},
 	},
-	"get_time": {
-		Name:        "get_time",
-		Description: "Mevcut tarih ve saati döndürür.",
-		Examples: []string{
-			"Kullanıcı: saat kaç? -> <arac_cagrisi>{\"type\":\"tool_call\",\"tool_call\":{\"tool_name\":\"get_time\",\"params\":{}}}<arac_cagrisi>",
-		},
-		Execute: func(params map[string]string) (string, error) {
-			return time.Now().Format("2006-01-02 15:04:05"), nil
-		},
-	},
 }
 
-// GenerateToolsPrompt, AI'ya sunulacak olan araçların dinamik ve detaylı kullanım kılavuzunu oluşturur.
+// GenerateToolsPrompt, AI'ya sunulacak olan araçların dinamik ve sade bir kılavuzunu oluşturur.
 func GenerateToolsPrompt() string {
 	var promptBuilder strings.Builder
 	promptBuilder.WriteString("# KULLANABİLECEĞİN ARAÇLAR\n\n")
-	promptBuilder.WriteString("Aşağıda, kullanıcı isteklerini yerine getirmek için kullanabileceğin araçların bir listesi bulunmaktadır. Bir aracı KULLANMADAN ÖNCE açıklamasını ve örneklerini DİKKATLİCE oku.\n\n")
+	promptBuilder.WriteString("Aşağıda, kullanıcı isteklerini yerine getirmek için kullanabileceğin araçların bir listesi bulunmaktadır:\n\n")
 
 	for _, tool := range ToolRegistry {
 		promptBuilder.WriteString(fmt.Sprintf("## Araç: %s\n", tool.Name))
-		promptBuilder.WriteString(fmt.Sprintf("- Açıklama: %s\n", tool.Description))
-		promptBuilder.WriteString("- Örnekler:\n")
-		for _, example := range tool.Examples {
-			promptBuilder.WriteString(fmt.Sprintf("  - %s\n", example))
-		}
-		promptBuilder.WriteString("\n")
+		promptBuilder.WriteString(fmt.Sprintf("- Açıklama: %s\n\n", tool.Description))
 	}
 
 	return promptBuilder.String()
