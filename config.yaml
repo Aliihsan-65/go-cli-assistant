@@ -2,7 +2,7 @@
 # Bu dosyadan model adı ve ollama sunucu adresi gibi ayarlar okunur.
 ollama:
   # Kullanılacak akıl yürütme (reasoning) modeli
-  model: "llama3.1:latest"
+  model: "Cybersecurity-BaronLLM"
   # Metinleri vektöre çevirecek olan embedding modeli
   embedding_model: "nomic-embed-text"
   # Ollama API sunucusunun ana adresi

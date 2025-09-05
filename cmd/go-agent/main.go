@@ -29,6 +29,17 @@ func extractJSONObject(text string) string {
 	return text[startIndex : endIndex+1]
 }
 
+// cleanJSONString, LLM'in üretebileceği standart olmayan tırnak işaretlerini temizler.
+func cleanJSONString(jsonStr string) string {
+	replacer := strings.NewReplacer(
+		"“", "\"",
+		"”", "\"",
+		"‘", "'",
+		"’", "'",
+	)
+	return replacer.Replace(jsonStr)
+}
+
 // handleToolCall, bir araç çağrısını yönetir, çalıştırır, geçmişi kaydeder ve başarı durumunu döndürür.
 func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJSON string) bool {
 	if toolCall.ToolName == "" {
@@ -45,20 +56,20 @@ func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJS
 	pterm.Info.Println("LLM şu aracı kullanmak istiyor:", toolCall.ToolName)
 	pterm.Info.Println("Parametreler:", toolCall.Params)
 
-	tool, exists := tools.ToolRegistry[toolCall.ToolName]
+	t, exists := tools.ToolRegistry[toolCall.ToolName]
 	if !exists {
 		pterm.Error.Println("Bilinmeyen araç istendi:", toolCall.ToolName)
 		*conversationHistory += "Asistan: [Hata: Bilinmeyen bir araç istendi.]\n"
 		return false
 	}
 
-	msg := fmt.Sprintf("'%s' aracını şu parametrelerle çalıştırmayı onaylıyor musunuz: %v", tool.Name, toolCall.Params)
+	msg := fmt.Sprintf("'%s' aracını şu parametrelerle çalıştırmayı onaylıyor musunuz: %v", t.Name, toolCall.Params)
 
-	switch tool.Name {
+	switch t.Name {
 	case "write_file":
-		msg = pterm.Warning.Sprintf("DİKKAT: '%s' aracını çalıştırmak '%s' dosyasının üzerine yazabilir/değiştirebilir. Onaylıyor musunuz?", tool.Name, toolCall.Params["file_path"])
+		msg = pterm.Warning.Sprintf("DİKKAT: '%s' aracını çalıştırmak '%s' dosyasının üzerine yazabilir/değiştirebilir. Onaylıyor musunuz?", t.Name, toolCall.Params["file_path"])
 	case "append_file":
-		msg = pterm.Warning.Sprintf("DİKKAT: '%s' aracını çalıştırmak '%s' dosyasına ekleme yapacak. Onaylıyor musunuz?", tool.Name, toolCall.Params["file_path"])
+		msg = pterm.Warning.Sprintf("DİKKAT: '%s' aracını çalıştırmak '%s' dosyasına ekleme yapacak. Onaylıyor musunuz?", t.Name, toolCall.Params["file_path"])
 	case "run_shell_command":
 		commandToRun, exists := toolCall.Params["command"]
 		if !exists {
@@ -79,21 +90,24 @@ func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJS
 
 	if !approved {
 		pterm.Warning.Println("İşlem iptal edildi.")
+
 		turnHistory += "Araç-Sonucu: [Kullanıcı tarafından iptal edildi.]\n"
 		*conversationHistory += turnHistory
 		return false
 	}
 
-	result, err := tool.Execute(toolCall.Params)
+	result, err := t.Execute(toolCall.Params)
 
 	if err != nil {
 		pterm.Error.Println("Araç hatası:", err)
+
 		turnHistory += fmt.Sprintf("Araç-Sonucu: [Hata: %v]\n", err)
 		*conversationHistory += turnHistory
 		return false
 	}
 
-	pterm.DefaultBox.WithTitle("Araç Çıktısı: " + tool.Name).Println(result)
+	pterm.DefaultBox.WithTitle("Araç Çıktısı: " + t.Name).Println(result)
+
 	turnHistory += "Araç-Sonucu: " + result + "\n"
 	*conversationHistory += turnHistory
 	return true
@@ -141,41 +155,20 @@ func main() {
 
 	switch selectedMode {
 	case "Araç Kullanımı (Siber Güvenlik & Pentest Otomasyonu)":
-		toolPrompt := `SEN, bir uzman asistansın. Görevin, kullanıcı isteğini analiz edip, cevabını **İSTİSNASIZ OLARAK** aşağıda belirtilen JSON formatında vermektir. Başka HİÇBİR format, metin veya açıklama kullanma.
+		toolPrompt := `SEN BİR JSON ÜRETİCİSİSİN. BAŞKA BİR ŞEY DEĞİLSİN.
+SADECE JSON. METİN YOK. AÇIKLAMA YOK.
 
-# ZORUNLU ÇIKTI FORMATI
-Cevabın SADECE ve HER ZAMAN aşağıdaki gibi iç içe geçmiş yapıda olmalı:
-{"type":"tool_call","tool_call":{"tool_name":"ARAÇ_ADI","params":{"PARAMETRE_ADI":"DEĞER"}}}
+ÇIKTIN BU OLACAK:
+{"type":"tool_call","tool_call":{"tool_name":"ARAÇ_İSMİ","params":{"PARAMETRE":"DEĞER"}}}
 
-# SIK YAPILAN HATA (BUNU YAPMA!)
-Aşağıdaki gibi düz bir yapı KULLANMA. Bu YANLIŞTIR ve programın çökmesine neden olur:
-` + "```json" + `
-// YANLIŞ ÖRNEK - DÜZ YAPI
-{
-  "type": "tool_call",
-  "tool_name": "run_shell_command",
-  "params": {}
-}
-` + "```" + `
+EĞER İSTEK BİR TERMİNAL KOMUTU İSE (nmap, ffuf, vb.), ARAÇ_İSMİ "run_shell_command" OLACAK.
 
-# DOĞRU YAPI
-` + "`tool_name`" + ` ve ` + "`params`" + ` alanları, her zaman ` + "`tool_call`" + ` adlı bir anahtarın İÇİNDE olmalıdır. Örnek:
-` + "```json" + `
-// DOĞRU ÖRNEK - İÇ İÇE YAPI
-{
-  "type": "tool_call",
-  "tool_call": {
-    "tool_name": "run_shell_command",
-    "params": {
-      "command": "ls -l"
-    }
-  }
-}
-` + "```" + `
+ÖRNEK:
+Kullanıcı: nmap ile 1.1.1.1 tara
+SEN: {"type":"tool_call","tool_call":{"tool_name":"run_shell_command","params":{"command":"nmap 1.1.1.1"}}}
 
-# ÖRNEK
-Kullanıcı İsteği: "bu dizini listele"
-SENİN CEVABIN: {"type":"tool_call","tool_call":{"tool_name":"list_directory","params":{"file_path":"."}}}`
+ŞİMDİ YAP. KONUŞMA.
+`
 
 		toolsListPrompt := tools.GenerateToolsPrompt()
 		baseSystemPrompt := fmt.Sprintf("%s\n\n%s", toolPrompt, toolsListPrompt)
@@ -291,8 +284,8 @@ SENİN CEVABIN: {"type":"tool_call","tool_call":{"tool_name":"list_directory","p
 				continue
 			}
 
-			jsonStr := extractJSONObject(responseStr)
-			if jsonStr == "" {
+			rawJsonStr := extractJSONObject(responseStr)
+			if rawJsonStr == "" {
 				pterm.Warning.Println("AI'nın cevabında geçerli bir JSON bloğu bulunamadı. Ham cevap:")
 				pterm.Println(responseStr)
 				conversationHistory += "Asistan: [Hata: JSON bulunamadı] " + responseStr + "\n"
@@ -302,6 +295,8 @@ SENİN CEVABIN: {"type":"tool_call","tool_call":{"tool_name":"list_directory","p
 				}
 				continue
 			}
+
+			jsonStr := cleanJSONString(rawJsonStr)
 
 			var aiResponse ollama.AIResponse
 			err = json.Unmarshal([]byte(jsonStr), &aiResponse)
