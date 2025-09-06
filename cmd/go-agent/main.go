@@ -2,8 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"go-agent/pkg/config"
 	"go-agent/pkg/memory"
@@ -16,98 +14,112 @@ import (
 	"github.com/pterm/pterm"
 )
 
-// extractJSONObject, bir metin içerisindeki ilk JSON nesnesini ({} arasındaki) bulup çıkarır.
-func extractJSONObject(text string) string {
-	startIndex := strings.Index(text, "{")
-	if startIndex == -1 {
-		return ""
-	}
-	endIndex := strings.LastIndex(text, "}")
-	if endIndex == -1 || endIndex < startIndex {
-		return ""
-	}
-	return text[startIndex : endIndex+1]
-}
+// parseToolCall, LLM'in metin çıktısını analiz eder ve TOOL_NAME ile TOOL_PARAMS'ı çıkarır.
+func parseToolCall(response string) (toolName string, toolParams string, err error) {
+	scanner := bufio.NewScanner(strings.NewReader(response))
+	var paramsBuilder strings.Builder
+	inParamsSection := false
 
-// cleanJSONString, LLM'in üretebileceği standart olmayan tırnak işaretlerini temizler.
-func cleanJSONString(jsonStr string) string {
-	replacer := strings.NewReplacer(
-		"“", "\"",
-		"”", "\"",
-		"‘", "'",
-		"’", "'",
-	)
-	return replacer.Replace(jsonStr)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "TOOL_NAME:") {
+			toolName = strings.TrimSpace(strings.TrimPrefix(line, "TOOL_NAME:"))
+			inParamsSection = false // Her ihtimale karşı
+		} else if strings.HasPrefix(line, "TOOL_PARAMS:") {
+			// TOOL_PARAMS'dan sonraki ilk satır
+			inParamsSection = true
+			paramsBuilder.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "TOOL_PARAMS:")))
+		} else if inParamsSection {
+			// TOOL_PARAMS'ın devam eden satırları
+			paramsBuilder.WriteString("\n" + line)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", "", fmt.Errorf("yanıt okunurken hata: %w", err)
+	}
+
+	if toolName == "" {
+		return "", "", fmt.Errorf("yanıtta 'TOOL_NAME:' bulunamadı")
+	}
+
+	toolParams = strings.TrimSpace(paramsBuilder.String())
+	return toolName, toolParams, nil
 }
 
 // handleToolCall, bir araç çağrısını yönetir, çalıştırır, geçmişi kaydeder ve başarı durumunu döndürür.
-func handleToolCall(toolCall ollama.ToolCall, conversationHistory *string, rawJSON string) bool {
-	if toolCall.ToolName == "" {
+func handleToolCall(toolName, toolParams string, conversationHistory *string, rawResponse string) bool {
+	if toolName == "" {
 		pterm.Error.Println("AI, bir araç çağırmaya çalıştı ancak hangisi olduğunu belirtmedi.")
-		*conversationHistory += "Asistan: [Hata: İsimsiz bir araç çağrı isteği alındı.]\n"
+		*conversationHistory += `Asistan: [Hata: İsimsiz bir araç çağrı isteği alındı.]\n`
 		return false
 	}
 
-	if toolCall.ToolName == "run_command" {
+	// 'run_command' gibi eski veya yanlış isimleri düzelt
+	if toolName == "run_command" {
 		pterm.Warning.Println("AI, 'run_command' çağırmaya çalıştı, 'run_shell_command' olarak düzeltiliyor.")
-		toolCall.ToolName = "run_shell_command"
+		toolName = "run_shell_command"
 	}
 
-	pterm.Info.Println("LLM şu aracı kullanmak istiyor:", toolCall.ToolName)
-	pterm.Info.Println("Parametreler:", toolCall.Params)
+	pterm.Info.Println("LLM şu aracı kullanmak istiyor:", toolName)
+	pterm.Info.Println("Ham Parametreler:", toolParams)
 
-	t, exists := tools.ToolRegistry[toolCall.ToolName]
+	t, exists := tools.ToolRegistry[toolName]
 	if !exists {
-		pterm.Error.Println("Bilinmeyen araç istendi:", toolCall.ToolName)
-		*conversationHistory += "Asistan: [Hata: Bilinmeyen bir araç istendi.]\n"
+		pterm.Error.Println("Bilinmeyen araç istendi:", toolName)
+		*conversationHistory += `Asistan: [Hata: Bilinmeyen bir araç istendi.]\n`
 		return false
 	}
 
-	msg := fmt.Sprintf("'%s' aracını şu parametrelerle çalıştırmayı onaylıyor musunuz: %v", t.Name, toolCall.Params)
+	// Parametreleri, onay mesajında göstermek ve aracı çalıştırmak için erkenden ayrıştır.
+	parsedParams, err := tools.ParseParams(toolName, toolParams)
+	if err != nil {
+		pterm.Error.Println("Araç parametreleri ayrıştırılamadı:", err)
+		*conversationHistory += fmt.Sprintf(`Asistan: [Hata: Parametre ayrıştırma hatası: %v]\n`, err)
+		return false
+	}
+
+	msg := fmt.Sprintf("'%s' aracını şu parametrelerle çalıştırmayı onaylıyor musunuz: %v", t.Name, parsedParams)
 
 	switch t.Name {
 	case "write_file":
-		msg = pterm.Warning.Sprintf("DİKKAT: '%s' aracını çalıştırmak '%s' dosyasının üzerine yazabilir/değiştirebilir. Onaylıyor musunuz?", t.Name, toolCall.Params["file_path"])
+		msg = pterm.Warning.Sprintf(`DİKKAT: '%s' aracını çalıştırmak '%s' dosyasının üzerine yazabilir/değiştirebilir. Onaylıyor musunuz?`, t.Name, parsedParams["file_path"])
 	case "append_file":
-		msg = pterm.Warning.Sprintf("DİKKAT: '%s' aracını çalıştırmak '%s' dosyasına ekleme yapacak. Onaylıyor musunuz?", t.Name, toolCall.Params["file_path"])
+		msg = pterm.Warning.Sprintf(`DİKKAT: '%s' aracını çalıştırmak '%s' dosyasına ekleme yapacak. Onaylıyor musunuz?`, t.Name, parsedParams["file_path"])
 	case "run_shell_command":
-		commandToRun, exists := toolCall.Params["command"]
+		commandToRun, exists := parsedParams["command"]
 		if !exists {
 			pterm.Error.Println("run_shell_command için 'command' parametresi eksik.")
-			*conversationHistory += "Asistan: [Hata: 'command' parametresi eksik.]\n"
+			*conversationHistory += `Asistan: [Hata: 'command' parametresi eksik.]\n`
 			return false
 		}
 		if strings.Contains(commandToRun, "sudo") {
-			msg = pterm.Error.Sprintf("!!! AŞIRI TEHLİKELİ İŞLEM !!! '%s' komutunu 'sudo' ile çalıştırmak üzeresiniz. Bu, sisteminizde kalıcı değişiklikler yapabilir veya zarar verebilir. Emin misiniz?", commandToRun)
+			msg = pterm.Error.Sprintf(`!!! AŞIRI TEHLİKELİ İŞLEM !!! '%s' komutunu 'sudo' ile çalıştırmak üzeresiniz. Bu, sisteminizde kalıcı değişiklikler yapabilir veya zarar verebilir. Emin misiniz?`, commandToRun)
 		} else {
-			msg = pterm.Warning.Sprintf("DİKKAT: '%s' komutunu terminalde çalıştırmak üzeresiniz. Onaylıyor musunuz?", commandToRun)
+			msg = pterm.Warning.Sprintf(`DİKKAT: '%s' komutunu terminalde çalıştırmak üzeresiniz. Onaylıyor musunuz?`, commandToRun)
 		}
 	}
 
 	approved, _ := pterm.DefaultInteractiveConfirm.Show(msg)
 
-	turnHistory := rawJSON + "\n"
+	turnHistory := rawResponse + "\n"
 
 	if !approved {
 		pterm.Warning.Println("İşlem iptal edildi.")
-
-		turnHistory += "Araç-Sonucu: [Kullanıcı tarafından iptal edildi.]\n"
+		turnHistory += `Araç-Sonucu: [Kullanıcı tarafından iptal edildi.]\n`
 		*conversationHistory += turnHistory
 		return false
 	}
 
-	result, err := t.Execute(toolCall.Params)
-
+	result, err := t.Execute(parsedParams)
 	if err != nil {
 		pterm.Error.Println("Araç hatası:", err)
-
-		turnHistory += fmt.Sprintf("Araç-Sonucu: [Hata: %v]\n", err)
+		turnHistory += fmt.Sprintf(`Araç-Sonucu: [Hata: %v]\n`, err)
 		*conversationHistory += turnHistory
 		return false
 	}
 
 	pterm.DefaultBox.WithTitle("Araç Çıktısı: " + t.Name).Println(result)
-
 	turnHistory += "Araç-Sonucu: " + result + "\n"
 	*conversationHistory += turnHistory
 	return true
@@ -126,7 +138,10 @@ func formatExamples(examples []map[string]string) string {
 	for i, ex := range examples {
 		builder.WriteString(fmt.Sprintf("# Örnek %d:\n", i+1))
 		builder.WriteString(fmt.Sprintf("#   Kullanıcı İsteği: \"%s\"\n", ex["user_request"]))
-		builder.WriteString(fmt.Sprintf("#   Üretilen Doğru Komut: %s\n", ex["tool_call_json"]))
+		// Yeni formatta, "Üretilen Doğru Komut" birden fazla satır olabilir.
+		// Bu yüzden her satırın başına "#   " ekleyerek formatı koruyoruz.
+		formattedCmd := strings.ReplaceAll(ex["tool_call_json"], "\n", "\n#   ")
+		builder.WriteString(fmt.Sprintf("#   Üretilen Doğru Komut:\n#   %s\n", formattedCmd))
 	}
 	return builder.String()
 }
@@ -155,27 +170,37 @@ func main() {
 
 	switch selectedMode {
 	case "Araç Kullanımı (Siber Güvenlik & Pentest Otomasyonu)":
-		toolPrompt := `SEN BİR JSON ÜRETİCİSİSİN. BAŞKA BİR ŞEY DEĞİLSİN.
-SADECE JSON. METİN YOK. AÇIKLAMA YOK.
+		// YENİ, BASİT PROMPT
+		toolPrompt := `SEN, bir komut satırı uzmanısın. Görevin, kullanıcı isteğini analiz edip uygun aracı ve parametrelerini belirlemektir.
+Cevabın SADECE ve HER ZAMAN şu formatta olmalı:
 
-ÇIKTIN BU OLACAK:
-{"type":"tool_call","tool_call":{"tool_name":"ARAÇ_İSMİ","params":{"PARAMETRE":"DEĞER"}}}
+TOOL_NAME: <kullanılacak_aracın_adı>
+TOOL_PARAMS: <araç_için_parametreler>
 
-EĞER İSTEK BİR TERMİNAL KOMUTU İSE (nmap, ffuf, vb.), ARAÇ_İSMİ "run_shell_command" OLACAK.
+- TOOL_NAME, aşağıdaki "KULLANABİLECEĞİN ARAÇLAR" listesinden seçilmelidir.
+- TOOL_PARAMS, run_shell_command için direkt komut (örn: nmap -sV 1.1.1.1), diğer araçlar için ise aracın açıklamasında belirtilen JSON formatında olmalıdır (örn: {"file_path":"dosya.txt","content":"içerik"}).
+- ASLA açıklama, giriş veya sonuç metni ekleme. Sadece TOOL_NAME ve TOOL_PARAMS.
 
-ÖRNEK:
-Kullanıcı: nmap ile 1.1.1.1 tara
-SEN: {"type":"tool_call","tool_call":{"tool_name":"run_shell_command","params":{"command":"nmap 1.1.1.1"}}}
+ÖRNEK 1 (Terminal Komutu):
+Kullanıcı İsteği: mevcut dizini listele
+SEN:
+TOOL_NAME: run_shell_command
+TOOL_PARAMS: ls -la
 
-ŞİMDİ YAP. KONUŞMA.
-`
+ÖRNEK 2 (Dosya Yazma):
+Kullanıcı İsteği: deneme.txt dosyasına 'merhaba dünya' yaz
+SEN:
+TOOL_NAME: write_file
+TOOL_PARAMS: {"file_path": "deneme.txt", "content": "merhaba dünya"}
+
+ŞİMDİ BAŞLA.`
 
 		toolsListPrompt := tools.GenerateToolsPrompt()
 		baseSystemPrompt := fmt.Sprintf("%s\n\n%s", toolPrompt, toolsListPrompt)
 
 		var inTrainingMode = false
 		var lastRequestForTraining = ""
-		var lastSuccessfulJSONForTraining = ""
+		var lastSuccessfulOutputForTraining = "" // JSON yerine artık ham çıktıyı tutacağız
 
 		for {
 			promptPrefix := pterm.LightYellow("Siz (Araç Modu): ")
@@ -195,17 +220,18 @@ SEN: {"type":"tool_call","tool_call":{"tool_name":"run_shell_command","params":{
 					inTrainingMode = true
 					pterm.Info.Println("Eğitim modu başlatıldı. Lütfen öğretmek istediğiniz komutu girin.")
 					lastRequestForTraining = ""
-					lastSuccessfulJSONForTraining = ""
+					lastSuccessfulOutputForTraining = ""
 					continue
 				} else {
-					if lastRequestForTraining != "" && lastSuccessfulJSONForTraining != "" {
+					if lastRequestForTraining != "" && lastSuccessfulOutputForTraining != "" {
 						pterm.Info.Println("Eğitim modu sonlandırılıyor. Ders hafızaya kaydediliyor...")
 						embedding, err := ollama.GenerateEmbedding(cfg.Ollama.URL, cfg.Ollama.EmbeddingModel, lastRequestForTraining)
 						if err != nil {
 							pterm.Warning.Printf("Hafızaya kaydetmek için embedding oluşturulamadı: %v\n", err)
 						} else {
 							uuid := uuid.New().String()
-							err = chromaClient.Add(uuid, embedding, lastRequestForTraining, lastSuccessfulJSONForTraining)
+							// DB'ye artık ham formatı kaydediyoruz. Alan adı hala 'tool_call_json'
+							err = chromaClient.Add(uuid, embedding, lastRequestForTraining, lastSuccessfulOutputForTraining)
 							if err != nil {
 								pterm.Warning.Printf("Ders hafızaya eklenemedi: %v\n", err)
 							} else {
@@ -217,7 +243,7 @@ SEN: {"type":"tool_call","tool_call":{"tool_name":"run_shell_command","params":{
 					}
 					inTrainingMode = false
 					lastRequestForTraining = ""
-					lastSuccessfulJSONForTraining = ""
+					lastSuccessfulOutputForTraining = ""
 					continue
 				}
 			}
@@ -239,14 +265,12 @@ SEN: {"type":"tool_call","tool_call":{"tool_name":"run_shell_command","params":{
 				for i, ex := range examples {
 					boxTitle := fmt.Sprintf("Ders #%d", i+1)
 					userRequest := ex["user_request"]
-					toolCallJSON := ex["tool_call_json"]
+					toolCallOutput := ex["tool_call_json"] // Bu artık ham metin
 
-					var prettyJSON bytes.Buffer
-					if err := json.Indent(&prettyJSON, []byte(toolCallJSON), "", "  "); err != nil {
-						prettyJSON.WriteString(toolCallJSON)
-					}
-
-					content := fmt.Sprintf("Kullanıcı İsteği: %s\nDoğru Komut:\n%s", userRequest, prettyJSON.String())
+					// Ham metni olduğu gibi göster
+					content := fmt.Sprintf(`Kullanıcı İsteği: %s
+Doğru Komut:
+%s`, userRequest, toolCallOutput)
 					pterm.DefaultBox.WithTitle(boxTitle).Println(content)
 				}
 				continue
@@ -274,7 +298,17 @@ SEN: {"type":"tool_call","tool_call":{"tool_name":"run_shell_command","params":{
 			}
 
 			conversationHistory += "Kullanıcı: " + userInput + "\n"
-			finalPrompt := fmt.Sprintf(`%s\n%s\n\n# MEVCUT ÇALIŞMA DİZİNİ\n%s\n\n--- Önceki Konuşma ---\n%s\n---------------------\n\nKullanıcı İsteği: %s`, baseSystemPrompt, examplesText, cwd, conversationHistory, userInput)
+			finalPrompt := fmt.Sprintf(`%s
+%s
+
+# MEVCUT ÇALIŞMA DİZİNİ
+%s
+
+--- Önceki Konuşma ---
+%s
+---------------------
+
+Kullanıcı İsteği: %s`, baseSystemPrompt, examplesText, cwd, conversationHistory, userInput)
 
 			spinner, _ := pterm.DefaultSpinner.Start("Uzman AI düşünüyor...")
 			responseStr, err := ollama.Generate(cfg.Ollama.URL, cfg.Ollama.Model, finalPrompt)
@@ -284,26 +318,12 @@ SEN: {"type":"tool_call","tool_call":{"tool_name":"run_shell_command","params":{
 				continue
 			}
 
-			rawJsonStr := extractJSONObject(responseStr)
-			if rawJsonStr == "" {
-				pterm.Warning.Println("AI'nın cevabında geçerli bir JSON bloğu bulunamadı. Ham cevap:")
-				pterm.Println(responseStr)
-				conversationHistory += "Asistan: [Hata: JSON bulunamadı] " + responseStr + "\n"
-				if inTrainingMode {
-					pterm.Warning.Println("Eğitim modunda komut başarısız oldu. Moddan çıkılıyor.")
-					inTrainingMode = false
-				}
-				continue
-			}
-
-			jsonStr := cleanJSONString(rawJsonStr)
-
-			var aiResponse ollama.AIResponse
-			err = json.Unmarshal([]byte(jsonStr), &aiResponse)
+			// YENİ PARSING MANTIĞI
+			toolName, toolParams, err := parseToolCall(responseStr)
 			if err != nil {
-				pterm.Warning.Printf("AI geçerli bir JSON formatında cevap vermedi. Hata: %v\nHam Cevap:", err)
+				pterm.Warning.Println("AI'nın cevabı geçerli bir araç çağrısı formatında değil:", err)
 				pterm.Println(responseStr)
-				conversationHistory += "Asistan: [Hata: Geçersiz JSON] " + responseStr + "\n"
+				conversationHistory += "Asistan: [Hata: Araç çağrısı ayrıştırılamadı] " + responseStr + "\n"
 				if inTrainingMode {
 					pterm.Warning.Println("Eğitim modunda komut başarısız oldu. Moddan çıkılıyor.")
 					inTrainingMode = false
@@ -311,24 +331,16 @@ SEN: {"type":"tool_call","tool_call":{"tool_name":"run_shell_command","params":{
 				continue
 			}
 
-			if aiResponse.ToolCall.ToolName != "" {
-				isSuccess := handleToolCall(aiResponse.ToolCall, &conversationHistory, jsonStr)
-				if inTrainingMode {
-					if isSuccess {
-						lastRequestForTraining = userInput
-						lastSuccessfulJSONForTraining = jsonStr
-						pterm.Success.Println("Eğitim komutu başarıyla çalıştı. Kaydetmek için tekrar /eğit komutunu girin.")
-					} else {
-						pterm.Warning.Println("Eğitim sırasında komut başarısız oldu. Moddan çıkılıyor.")
-						inTrainingMode = false
-					}
-				}
-			} else {
-				pterm.Error.Println("AI geçerli bir araç çağrısı döndürmedi. Yanıt Tipi:", aiResponse.Type)
-				pterm.Warning.Println("Alınan JSON:", jsonStr)
-				conversationHistory += "Asistan: [Hata: Geçersiz araç çağrısı] " + jsonStr + "\n"
-				if inTrainingMode {
-					pterm.Warning.Println("Eğitim modunda komut başarısız oldu. Moddan çıkılıyor.")
+			// handleToolCall artık ayrıştırılmış değerleri alıyor
+			isSuccess := handleToolCall(toolName, toolParams, &conversationHistory, responseStr)
+			if inTrainingMode {
+				if isSuccess {
+					lastRequestForTraining = userInput
+					// Eğitim için ham başarılı çıktıyı sakla
+					lastSuccessfulOutputForTraining = responseStr
+					pterm.Success.Println("Eğitim komutu başarıyla çalıştı. Kaydetmek için tekrar /eğit komutunu girin.")
+				} else {
+					pterm.Warning.Println("Eğitim sırasında komut başarısız oldu. Moddan çıkılıyor.")
 					inTrainingMode = false
 				}
 			}
@@ -353,7 +365,16 @@ SEN: {"type":"tool_call","tool_call":{"tool_name":"run_shell_command","params":{
 			}
 
 			conversationHistory += "Kullanıcı: " + userInput + "\n"
-			finalPrompt := fmt.Sprintf(`%s\n\n# MEVCUT ÇALIŞMA DİZİNİ\n%s\n\n--- Önceki Konuşma ---\n%s\n---------------------\n\nKullanıcı İsteği: %s`, chatPrompt, cwd, conversationHistory, userInput)
+			finalPrompt := fmt.Sprintf(`%s
+
+# MEVCUT ÇALIŞMA DİZİNİ
+%s
+
+--- Önceki Konuşma ---
+%s
+---------------------
+
+Kullanıcı İsteği: %s`, chatPrompt, cwd, conversationHistory, userInput)
 
 			spinner, _ := pterm.DefaultSpinner.Start("AI düşünüyor...")
 			responseStr, err := ollama.Generate(cfg.Ollama.URL, cfg.Ollama.Model, finalPrompt)

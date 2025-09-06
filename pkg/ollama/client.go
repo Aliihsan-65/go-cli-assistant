@@ -8,26 +8,7 @@ import (
 	"net/http"
 )
 
-// --- Yeni Yapılar ---
-
-// AIResponse, yapay zekadan gelen tüm cevap türlerini modelleyen ana yapıdır.
-type AIResponse struct {
-	Type          string   `json:"type"`
-	Conversation  string   `json:"conversation,omitempty"`
-	ToolCall      ToolCall `json:"tool_call,omitempty"`
-	Clarification string   `json:"clarification,omitempty"`
-	Options       []string `json:"options,omitempty"`
-}
-
-// ToolCall, LLM'in bir araç kullanma isteğini temsil eder.
-// Bu artık AIResponse'un bir parçası.
-type ToolCall struct {
-	ToolName string            `json:"tool_name"`
-	Params   map[string]string `json:"params"`
-}
-
-
-// --- Mevcut Fonksiyonlar (Değişiklik Yok) ---
+// --- Mevcut Fonksiyonlar ---
 
 // Request, Ollama API'sine gönderilecek isteği temsil eder.
 type Request struct {
