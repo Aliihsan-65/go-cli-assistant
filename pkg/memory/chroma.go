@@ -244,3 +244,39 @@ func (c *ChromaClient) GetAllExamples() ([]map[string]string, error) {
 
 	return getResp.Metadatas, nil
 }
+
+// DeleteCollection, belirtilen koleksiyonu ChromaDB'den siler.
+func (c *ChromaClient) DeleteCollection() error {
+	url := c.BaseURL + "/api/v2/tenants/default_tenant/databases/default_database/collections/" + c.CollectionName
+
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return fmt.Errorf("silme isteği oluşturulamadı: %w", err)
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("koleksiyon silme API hatası: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// ChromaDB returns 404 if the collection doesn't exist, which is fine for us.
+		if resp.StatusCode == http.StatusNotFound {
+			pterm.Info.Printf("Silinecek hafıza koleksiyonu '%s' bulunamadı, zaten temiz.\n", c.CollectionName)
+			return nil
+		}
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("koleksiyon silinemedi, durum: %s, cevap: %s", resp.Status, string(body))
+	}
+
+	pterm.Success.Printf("Hafıza koleksiyonu '%s' başarıyla silindi.\n", c.CollectionName)
+	return nil
+}
+
+// CreateCollection, ChromaDB'de belirtilen koleksiyonu yeniden oluşturur.
+func (c *ChromaClient) CreateCollection() error {
+	// ensureCollectionExists, koleksiyonun varlığını kontrol eder ve yoksa oluşturur.
+	// Bu, sıfırlama işlemi için tam olarak ihtiyacımız olan şeydir.
+	return c.ensureCollectionExists()
+}

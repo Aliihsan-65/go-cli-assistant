@@ -18,36 +18,36 @@ type Tool struct {
 // ParseParams, LLM'den gelen ham parametre string'ini analiz eder ve aracın Execute
 // fonksiyonunun beklediği map[string]string formatına dönüştürür.
 func ParseParams(toolName string, paramsString string) (map[string]string, error) {
-	var parsedParams map[string]string
+	paramsString = strings.TrimSpace(paramsString)
 
-	// run_shell_command için parametre ham komutun kendisidir.
-	if toolName == "run_shell_command" {
-		// Parametre string'inin başındaki ve sonundaki olası tırnak işaretlerini temizle.
-		cleanParams := strings.Trim(paramsString, `"'`)
-		parsedParams = map[string]string{"command": cleanParams}
-		return parsedParams, nil
-	}
+	switch toolName {
+	case "run_shell_command":
+		return map[string]string{"command": strings.Trim(paramsString, `"`)}, nil
 
-	// Diğer araçlar için parametrenin bir JSON string'i olmasını bekliyoruz.
-	// LLM bazen kaçış karakterleri ekleyebilir, bunları temizlemeyi deneyelim.
-	if err := json.Unmarshal([]byte(paramsString), &parsedParams); err != nil {
-		// Eğer JSON çözme başarısız olursa, tek parametreli araçlar için
-		// ham string'i doğrudan kullanmayı deneyebiliriz. Bu, esnekliği artırır.
-		// Örn: TOOL_PARAMS: /etc/passwd
-		switch toolName {
-		case "read_file", "list_directory":
-			// JSON değilse, bunun doğrudan dosya yolu olduğunu varsay.
-			// Parametre string'inin başındaki ve sonundaki olası tırnak işaretlerini temizle.
-			cleanParams := strings.Trim(paramsString, `"'`)
-			parsedParams = map[string]string{"file_path": cleanParams}
-			return parsedParams, nil
-		default:
-			// Diğer araçlar için bu bir hatadır.
-			return nil, fmt.Errorf("'%s' aracı için parametreler JSON formatında olmalı, ancak çözümlenemedi: %w. Gelen parametre: %s", toolName, err, paramsString)
+	case "read_file", "list_directory":
+		filePath := strings.Trim(paramsString, `"`)
+		return map[string]string{"file_path": filePath}, nil
+
+	case "write_file", "append_file":
+		parts := strings.SplitN(paramsString, " ", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("'%s' aracı için geçersiz parametre formatı. Beklenen: <dosya_yolu> \"<içerik>\". Gelen: %s", toolName, paramsString)
 		}
-	}
+		filePath := parts[0]
+		content := strings.Trim(parts[1], `"`)
 
-	return parsedParams, nil
+		return map[string]string{
+			"file_path": filePath,
+			"content":   content,
+		}, nil
+
+	default:
+		var parsedParams map[string]string
+		if err := json.Unmarshal([]byte(paramsString), &parsedParams); err == nil {
+			return parsedParams, nil
+		}
+		return nil, fmt.Errorf("'%s' aracı için parametreler anlaşılamadı veya formatı desteklenmiyor: %s", toolName, paramsString)
+	}
 }
 
 
@@ -55,7 +55,7 @@ func ParseParams(toolName string, paramsString string) (map[string]string, error
 var ToolRegistry = map[string]Tool{
 	"list_directory": {
 		Name:        "list_directory",
-		Description: "Belirtilen bir dosya sistemi dizinindeki dosyaları ve klasörleri listeler. Parametreler: { \"file_path\": \"string\" }",
+		Description: "Belirtilen bir dosya sistemi dizinindeki dosyaları ve klasörleri listeler. Parametreler: file_path",
 		Execute: func(params map[string]string) (string, error) {
 			path := params["file_path"]
 			if path == "" {
@@ -78,7 +78,7 @@ var ToolRegistry = map[string]Tool{
 	},
 	"read_file": {
 		Name:        "read_file",
-		Description: "Belirtilen bir dosyanın içeriğini okur. Parametreler: { \"file_path\": \"string\" }",
+		Description: "Belirtilen bir dosyanın içeriğini okur. Parametreler: file_path",
 		Execute: func(params map[string]string) (string, error) {
 			path := params["file_path"]
 			if path == "" {
@@ -93,7 +93,7 @@ var ToolRegistry = map[string]Tool{
 	},
 	"write_file": {
 		Name:        "write_file",
-		Description: "Belirtilen bir dosyaya içerik yazar. DİKKAT: Dosyanın üzerine tamamen yazar. Parametreler: { \"file_path\": \"string\", \"content\": \"string\" }",
+		Description: "Belirtilen bir dosyaya içerik yazar. DİKKAT: Dosyanın üzerine tamamen yazar. Parametreler: file_path \"content\"",
 		Execute: func(params map[string]string) (string, error) {
 			path := params["file_path"]
 			content := params["content"]
@@ -109,7 +109,7 @@ var ToolRegistry = map[string]Tool{
 	},
 	"append_file": {
 		Name:        "append_file",
-		Description: "Belirtilen bir dosyanın sonuna içerik ekler. Parametreler: { \"file_path\": \"string\", \"content\": \"string\" }",
+		Description: "Belirtilen bir dosyanın sonuna içerik ekler. Parametreler: file_path \"content\"",
 		Execute: func(params map[string]string) (string, error) {
 			path := params["file_path"]
 			content := params["content"]
@@ -129,7 +129,7 @@ var ToolRegistry = map[string]Tool{
 	},
 	"run_shell_command": {
 		Name:        "run_shell_command",
-		Description: "Bir terminal komutunu (shell command) çalıştırır. Parametreler: { \"command\": \"string\" }",
+		Description: "Bir terminal komutunu (shell command) çalıştırır. Parametreler: command",
 		Execute: func(params map[string]string) (string, error) {
 			command := params["command"]
 			if command == "" {

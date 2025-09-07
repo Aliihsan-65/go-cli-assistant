@@ -2,17 +2,26 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"go-agent/pkg/config"
 	"go-agent/pkg/memory"
 	"go-agent/pkg/ollama"
 	"go-agent/pkg/tools"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/pterm/pterm"
 )
+
+// DDGResult, ddgr'ın JSON çıktısındaki tek bir arama sonucunu temsil eder.
+type DDGResult struct {
+	Title    string `json:"title"`
+	Abstract string `json:"abstract"`
+	URL      string `json:"url"`
+}
 
 // parseToolCall, LLM'in metin çıktısını analiz eder ve TOOL_NAME ile TOOL_PARAMS'ı çıkarır.
 func parseToolCall(response string) (toolName string, toolParams string, err error) {
@@ -171,27 +180,35 @@ func main() {
 	switch selectedMode {
 	case "Araç Kullanımı (Siber Güvenlik & Pentest Otomasyonu)":
 		// YENİ, BASİT PROMPT
-		toolPrompt := `SEN, bir komut satırı uzmanısın. Görevin, kullanıcı isteğini analiz edip uygun aracı ve parametrelerini belirlemektir.
-Cevabın SADECE ve HER ZAMAN şu formatta olmalı:
+		toolPrompt := `SEN, bir siber güvenlik uzmanı ve komut satırı arayüzü (CLI) asistanısın. Görevin, kullanıcı isteklerini, SADECE sana verilen araçları kullanarak çözmektir.
 
-TOOL_NAME: <kullanılacak_aracın_adı>
-TOOL_PARAMS: <araç_için_parametreler>
+# TEMEL KURALLAR
+1.  Cevabın HER ZAMAN ve SADECE şu formatta olmalı:
+    TOOL_NAME: <araç_adı>
+    TOOL_PARAMS: <parametreler>
+2.  ASLA açıklama, selamlama veya başka bir metin ekleme. Sadece TOOL_NAME ve TOOL_PARAMS ver.
+3.  TOOL_NAME olarak SADECE "KULLANABİLECEĞİN ARAÇLAR" listesindekileri kullanabilirsin. ASLA bu listenin dışında bir araç adı (örneğin 'nmap', 'ls', 'cat') kullanma.
+4.  Eğer kullanıcı nmap, ls, cat, echo gibi bir terminal komutu çalıştırmak istiyorsa, TOOL_NAME olarak HER ZAMAN run_shell_command kullanmalısın. TOOL_PARAMS ise komutun tamamı olmalıdır.
 
-- TOOL_NAME, aşağıdaki "KULLANABİLECEĞİN ARAÇLAR" listesinden seçilmelidir.
-- TOOL_PARAMS, run_shell_command için direkt komut (örn: nmap -sV 1.1.1.1), diğer araçlar için ise aracın açıklamasında belirtilen JSON formatında olmalıdır (örn: {"file_path":"dosya.txt","content":"içerik"}).
-- ASLA açıklama, giriş veya sonuç metni ekleme. Sadece TOOL_NAME ve TOOL_PARAMS.
+# ÖRNEKLER
 
-ÖRNEK 1 (Terminal Komutu):
-Kullanıcı İsteği: mevcut dizini listele
+## ÖRNEK 1: Terminal Komutu Çalıştırma
+Kullanıcı İsteği: 216.150.1.193 adresine karşı agresif bir nmap taraması yap
 SEN:
 TOOL_NAME: run_shell_command
-TOOL_PARAMS: ls -la
+TOOL_PARAMS: nmap -A 216.150.1.193
 
-ÖRNEK 2 (Dosya Yazma):
-Kullanıcı İsteği: deneme.txt dosyasına 'merhaba dünya' yaz
+## ÖRNEK 2: Dosya Yazma
+Kullanıcı İsteği: bulgular.txt dosyasına 'Port 80 açık' yaz
 SEN:
 TOOL_NAME: write_file
-TOOL_PARAMS: {"file_path": "deneme.txt", "content": "merhaba dünya"}
+TOOL_PARAMS: bulgular.txt "Port 80 açık"
+
+## ÖRNEK 3: Dizin Listeleme
+Kullanıcı İsteği: mevcut dizindeki dosyaları göster
+SEN:
+TOOL_NAME: run_shell_command
+TOOL_PARAMS: ls -l
 
 ŞİMDİ BAŞLA.`
 
@@ -213,6 +230,84 @@ TOOL_PARAMS: {"file_path": "deneme.txt", "content": "merhaba dünya"}
 
 			if strings.ToLower(userInput) == "exit" || strings.ToLower(userInput) == "çıkış" {
 				break
+			}
+
+			if userInput == "/web" {
+				pterm.DefaultBasicText.Print(pterm.LightBlue("Web'de ne aramak istersiniz?: "))
+				query, _ := reader.ReadString('\n')
+				query = strings.TrimSpace(query)
+
+				if query == "" {
+					pterm.Warning.Println("Arama sorgusu boş olamaz.")
+					continue
+				}
+
+				spinner, _ := pterm.DefaultSpinner.Start("Web'de aranıyor: ", query)
+				// -n 5 kullanarak sonuçları 5 ile sınırla
+				cmd := exec.Command("ddgr", "--json", "-n", "5", query)
+				output, err := cmd.CombinedOutput()
+				spinner.Stop()
+
+				if err != nil {
+					pterm.Error.Printf("ddgr komutu çalıştırılamadı: %v\nÇıktı: %s\n", err, string(output))
+					pterm.Warning.Println("Lütfen 'ddgr' aracının sisteminizde kurulu ve PATH içinde olduğundan emin olun.")
+					continue
+				}
+
+				var results []DDGResult
+				if err := json.Unmarshal(output, &results); err != nil {
+					// Bazen ddgr hata durumunda JSON olmayan bir çıktı verebilir, bunu kontrol edelim
+					if strings.Contains(string(output), "no results") {
+						pterm.Info.Println("Arama sonucu bulunamadı.")
+					} else {
+						pterm.Error.Printf("Arama sonuçları (JSON) ayrıştırılamadı: %v\n", err)
+						pterm.Debug.Println("Alınan Ham Çıktı:\n", string(output))
+					}
+					continue
+				}
+
+				if len(results) == 0 {
+					pterm.Info.Println("Arama sonucu bulunamadı.")
+					continue
+				}
+
+				var historyBuilder strings.Builder
+				historyBuilder.WriteString(fmt.Sprintf("Kullanıcı bir web araması yaptı. Sorgu: \"%s\". Bulunan sonuçlar:\n", query))
+
+				pterm.Success.Printf("'%s' için %d sonuç bulundu:\n", query, len(results))
+				for i, res := range results {
+					pterm.DefaultBox.WithTitle(fmt.Sprintf("Sonuç %d: %s", i+1, res.Title)).Println(
+						pterm.LightYellow("URL: ")+res.URL+"\n"+
+								pterm.LightCyan("Özet: ")+res.Abstract,
+					)
+					historyBuilder.WriteString(fmt.Sprintf("- Başlık: %s, URL: %s, Özet: %s\n", res.Title, res.URL, res.Abstract))
+				}
+
+				// Konuşma geçmişine ekle
+				conversationHistory += historyBuilder.String()
+				pterm.Info.Println("Arama sonuçları konuşma geçmişine eklendi.")
+
+				continue // Bir sonraki döngüye geç
+			}
+
+			if userInput == "/hafizayisifirla" {
+				approved, _ := pterm.DefaultInteractiveConfirm.Show("DİKKAT: Bu işlem geri alınamaz. Tüm eğitim verilerini (hafızayı) kalıcı olarak silmek istediğinizden emin misiniz?")
+				if approved {
+					pterm.Info.Println("Hafıza koleksiyonu siliniyor...")
+					if err := chromaClient.DeleteCollection(); err != nil {
+						pterm.Error.Printf("Hafıza silinirken bir hata oluştu: %v\n", err)
+						continue
+					}
+					pterm.Info.Println("Hafıza koleksiyonu yeniden oluşturuluyor...")
+					if err := chromaClient.CreateCollection(); err != nil {
+						pterm.Error.Printf("Hafıza yeniden oluşturulurken bir hata oluştu: %v\n", err)
+						continue
+					}
+					pterm.Success.Println("Hafıza başarıyla sıfırlandı.")
+				} else {
+					pterm.Warning.Println("Hafıza sıfırlama işlemi iptal edildi.")
+				}
+				continue
 			}
 
 			if userInput == "/eğit" {
