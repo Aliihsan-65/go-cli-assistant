@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/c-bata/go-prompt"
 	"github.com/google/uuid"
 	"github.com/pterm/pterm"
 )
@@ -128,7 +129,8 @@ func handleToolCall(toolName, toolParams string, conversationHistory *string, ra
 		return false
 	}
 
-	pterm.DefaultBox.WithTitle("Araç Çıktısı: " + t.Name).Println(result)
+	pterm.DefaultSection.WithLevel(1).Println("Araç Çıktısı: " + t.Name)
+	pterm.Println(result)
 	turnHistory += "Araç-Sonucu: " + result + "\n"
 	*conversationHistory += turnHistory
 	return true
@@ -167,19 +169,23 @@ func main() {
 	pterm.DefaultBigText.WithLetters(pterm.NewLettersFromString("GO AGENT")).Render()
 	pterm.Info.Println("Go ile yazılmış, modüler ve yapılandırılabilir AI asistanı.")
 	pterm.Info.Println("Sohbet için doğrudan yazın. Araç kullanmak için '/tool <isteğiniz>' yazın.")
-	pterm.Println()
 
-	reader := bufio.NewReader(os.Stdin)
+	// Araç listesini dinamik olarak oluştur
+	var availableTools []string
+	for name := range tools.ToolRegistry {
+		availableTools = append(availableTools, name)
+	}
+	toolListString := strings.Join(availableTools, ", ")
 
 	// Araç modu için gerekli değişkenleri döngü dışında tanımla
-	toolPrompt := `SEN, bir siber güvenlik uzmanı ve komut satırı arayüzü (CLI) asistanısın. Görevin, kullanıcı isteklerini, SADECE sana verilen araçları kullanarak çözmektir.
+	toolPrompt := fmt.Sprintf(`SEN, bir siber güvenlik uzmanı ve komut satırı arayüzü (CLI) asistanısın. Görevin, kullanıcı isteklerini, SADECE sana verilen araçları kullanarak çözmektir.
 
 # TEMEL KURALLAR
 1.  Cevabın HER ZAMAN ve SADECE şu formatta olmalı:
     TOOL_NAME: <araç_adı>
     TOOL_PARAMS: <parametreler>
 2.  ASLA açıklama, selamlama veya başka bir metin ekleme. Sadece TOOL_NAME ve TOOL_PARAMS ver.
-3.  TOOL_NAME olarak SADECE "KULLANABİLECEĞİN ARAÇLAR" listesindekileri kullanabilirsin. ASLA bu listenin dışında bir araç adı (örneğin 'nmap', 'ls', 'cat') kullanma.
+3.  TOOL_NAME olarak SADECE şu araçlardan birini kullanabilirsin: [%s]. ASLA bu listenin dışında bir araç adı kullanma.
 4.  Eğer kullanıcı nmap, ls, cat, echo gibi bir terminal komutu çalıştırmak istiyorsa, TOOL_NAME olarak HER ZAMAN run_shell_command kullanmalısın. TOOL_PARAMS ise komutun tamamı olmalıdır.
 
 # ÖRNEKLER
@@ -202,7 +208,8 @@ SEN:
 TOOL_NAME: run_shell_command
 TOOL_PARAMS: ls -l
 
-ŞİMDİ BAŞLA.`
+ŞİMDİ BAŞLA.`, toolListString)
+
 	toolsListPrompt := tools.GenerateToolsPrompt()
 	baseSystemPrompt := fmt.Sprintf("%s\n\n%s", toolPrompt, toolsListPrompt)
 	var inTrainingMode = false
@@ -212,13 +219,13 @@ TOOL_PARAMS: ls -l
 	// Sohbet modu için gerekli değişken
 	chatPrompt := `SEN, yardımsever bir sohbet asistanısın. Görevin sadece kullanıcıyla sohbet etmektir. Asla ve asla özel formatlar, etiketler veya araçlar kullanma.`
 
-	for {
-		pterm.DefaultBasicText.Print(pterm.LightYellow("Siz: "))
-		userInput, _ := reader.ReadString('\n')
+	executor := func(userInput string) {
 		userInput = strings.TrimSpace(userInput)
 
 		if strings.ToLower(userInput) == "exit" || strings.ToLower(userInput) == "çıkış" {
-			break
+			pterm.Info.Println("Görüşmek üzere!")
+			os.Exit(0)
+			return
 		}
 
 		// Mod seçimi
@@ -226,58 +233,25 @@ TOOL_PARAMS: ls -l
 			// ARAÇ KULLANIM MODU
 			toolInput := strings.TrimSpace(strings.TrimPrefix(userInput, "/tool"))
 
-			// Araç moduna özgü komutlar burada da çalışmalı
-			if toolInput == "/web" { // /tool /web -> /web
-				pterm.DefaultBasicText.Print(pterm.LightBlue("Web'de ne aramak istersiniz?: "))
-				query, _ := reader.ReadString('\n')
-				query = strings.TrimSpace(query)
-				if query == "" {
-					pterm.Warning.Println("Arama sorgusu boş olamaz.")
-					continue
-				}
-				// ... (web arama mantığı aynen kalıyor)
-				spinner, _ := pterm.DefaultSpinner.Start("Web'de aranıyor: ", query)
-				cmd := exec.Command("ddgr", "--json", "-n", "5", query)
-				output, err := cmd.CombinedOutput()
-				spinner.Stop()
-				if err != nil {
-					pterm.Error.Printf("ddgr komutu çalıştırılamadı: %v\nÇıktı: %s\n", err, string(output))
-					continue
-				}
-				var results []DDGResult
-				if err := json.Unmarshal(output, &results); err != nil {
-					pterm.Error.Printf("Arama sonuçları (JSON) ayrıştırılamadı: %v\n", err)
-					continue
-				}
-				var historyBuilder strings.Builder
-				historyBuilder.WriteString(fmt.Sprintf("Kullanıcı bir web araması yaptı. Sorgu: \"%s\". Bulunan sonuçlar:\n", query))
-				pterm.Success.Printf("'%s' için %d sonuç bulundu:\n", query, len(results))
-				for i, res := range results {
-					pterm.DefaultBox.WithTitle(fmt.Sprintf("Sonuç %d: %s", i+1, res.Title)).Println(pterm.LightYellow("URL: ") + res.URL + "\n" + pterm.LightCyan("Özet: ") + res.Abstract)
-					historyBuilder.WriteString(fmt.Sprintf("- Başlık: %s, URL: %s, Özet: %s\n", res.Title, res.URL, res.Abstract))
-				}
-				conversationHistory += historyBuilder.String()
-				pterm.Info.Println("Arama sonuçları konuşma geçmişine eklendi.")
-				continue
-			}
-			if toolInput == "/hafizayisifirla" {
+			// Araç moduna özgü komutlar (web hariç)
+			if toolInput == "/hafizayisifirla" { // /tool /hafizayisifirla
 				approved, _ := pterm.DefaultInteractiveConfirm.Show("DİKKAT: Bu işlem geri alınamaz. Tüm eğitim verilerini (hafızayı) kalıcı olarak silmek istediğinizden emin misiniz?")
 				if approved {
 					if err := chromaClient.DeleteCollection(); err != nil {
 						pterm.Error.Printf("Hafıza silinirken bir hata oluştu: %v\n", err)
-						continue
+						return
 					}
 					if err := chromaClient.CreateCollection(); err != nil {
 						pterm.Error.Printf("Hafıza yeniden oluşturulurken bir hata oluştu: %v\n", err)
-						continue
+						return
 					}
 					pterm.Success.Println("Hafıza başarıyla sıfırlandı.")
 				} else {
 					pterm.Warning.Println("Hafıza sıfırlama işlemi iptal edildi.")
 				}
-				continue
+				return
 			}
-			if toolInput == "/eğit" {
+			if toolInput == "/eğit" { // /tool /eğit
 				if !inTrainingMode {
 					inTrainingMode = true
 					pterm.Info.Println("Eğitim modu başlatıldı. Lütfen öğretmek istediğiniz komutu girin. (Örn: /tool <komut>)")
@@ -304,19 +278,18 @@ TOOL_PARAMS: ls -l
 					lastRequestForTraining = ""
 					lastSuccessfulOutputForTraining = ""
 				}
-				continue
+				return
 			}
-			if toolInput == "/showmemory" {
-				//... (showmemory mantığı aynen kalıyor)
+			if toolInput == "/showmemory" { // /tool /showmemory
 				pterm.Info.Println("Hafızadaki tüm dersler getiriliyor...")
 				examples, err := chromaClient.GetAllExamples()
 				if err != nil {
 					pterm.Error.Printf("Hafıza alınamadı: %v\n", err)
-					continue
+					return
 				}
 				if len(examples) == 0 {
 					pterm.Info.Println("Hafıza boş.")
-					continue
+					return
 				}
 				pterm.Info.Printf("%d adet ders bulundu:\n", len(examples))
 				for i, ex := range examples {
@@ -324,11 +297,11 @@ TOOL_PARAMS: ls -l
 					content := fmt.Sprintf(`Kullanıcı İsteği: %s\nDoğru Komut:\n%s`, ex["user_request"], ex["tool_call_json"])
 					pterm.DefaultBox.WithTitle(boxTitle).Println(content)
 				}
-				continue
+				return
 			}
 			if toolInput == "" {
 				pterm.Warning.Println("Araç modu için bir istek girmelisiniz. Örnek: /tool mevcut dizini listele")
-				continue
+				return
 			}
 
 			// Normal veya Eğitim modunda komut işleme
@@ -365,7 +338,7 @@ Kullanıcı İsteği: %s`, baseSystemPrompt, examplesText, cwd, conversationHist
 			spinner.Stop()
 			if err != nil {
 				pterm.Error.Printf("Ollama'dan cevap alınamadı: %v", err)
-				continue
+				return
 			}
 
 			toolName, toolParams, err := parseToolCall(responseStr)
@@ -377,7 +350,7 @@ Kullanıcı İsteği: %s`, baseSystemPrompt, examplesText, cwd, conversationHist
 					pterm.Warning.Println("Eğitim modunda komut başarısız oldu. Moddan çıkılıyor.")
 					inTrainingMode = false
 				}
-				continue
+				return
 			}
 
 			isSuccess := handleToolCall(toolName, toolParams, &conversationHistory, responseStr)
@@ -391,6 +364,36 @@ Kullanıcı İsteği: %s`, baseSystemPrompt, examplesText, cwd, conversationHist
 					inTrainingMode = false
 				}
 			}
+		} else if strings.HasPrefix(userInput, "/web") {
+			query := strings.TrimSpace(strings.TrimPrefix(userInput, "/web"))
+			if query == "" {
+				pterm.Warning.Println("Lütfen /web komutundan sonra bir arama sorgusu girin.")
+				return
+			}
+
+			spinner, _ := pterm.DefaultSpinner.Start("Web'de aranıyor: ", query)
+			cmd := exec.Command("ddgr", "--json", "-n", "5", query)
+			output, err := cmd.CombinedOutput()
+			spinner.Stop()
+			if err != nil {
+				pterm.Error.Printf("ddgr komutu çalıştırılamadı: %v\nÇıktı: %s\n", err, string(output))
+				return
+			}
+			var results []DDGResult
+			if err := json.Unmarshal(output, &results); err != nil {
+				pterm.Error.Printf("Arama sonuçları (JSON) ayrıştırılamadı: %v\n", err)
+				return
+			}
+			var historyBuilder strings.Builder
+			historyBuilder.WriteString(fmt.Sprintf("Kullanıcı bir web araması yaptı. Sorgu: \"%s\". Bulunan sonuçlar:\n", query))
+			pterm.Success.Printf("'%s' için %d sonuç bulundu:\n", query, len(results))
+			for i, res := range results {
+				pterm.DefaultBox.WithTitle(fmt.Sprintf("Sonuç %d: %s", i+1, res.Title)).Println(pterm.LightYellow("URL: ") + res.URL + "\n" + pterm.LightCyan("Özet: ") + res.Abstract)
+				historyBuilder.WriteString(fmt.Sprintf("- Başlık: %s, URL: %s, Özet: %s\n", res.Title, res.URL, res.Abstract))
+			}
+			conversationHistory += historyBuilder.String()
+			pterm.Info.Println("Arama sonuçları konuşma geçmişine eklendi.")
+			return
 
 		} else {
 			// GENEL SOHBET MODU
@@ -412,12 +415,35 @@ Kullanıcı İsteği: %s`, chatPrompt, cwd, conversationHistory, userInput)
 			spinner.Stop()
 			if err != nil {
 				pterm.Error.Printf("Ollama'dan cevap alınamadı: %v", err)
-				continue
+				return
 			}
 
 			cleanResponse := strings.TrimSpace(responseStr)
-			pterm.DefaultBasicText.Println(pterm.LightGreen(cleanResponse))
+			pterm.DefaultSection.WithLevel(1).Println("Asistan")
+			pterm.Println(cleanResponse)
 			conversationHistory += "Asistan: " + cleanResponse + "\n"
 		}
 	}
+
+	completer := func(d prompt.Document) []prompt.Suggest {
+		s := []prompt.Suggest{
+			{Text: "/tool", Description: "Araç modunu kullan"},
+			{Text: "/web", Description: "Web'de arama yap"},
+			{Text: "/eğit", Description: "Eğitim modunu başlat/bitir"},
+			{Text: "/showmemory", Description: "Hafızayı göster"},
+			{Text: "/hafizayisifirla", Description: "Hafızayı sıfırla"},
+			{Text: "exit", Description: "Çıkış"},
+		}
+		return prompt.FilterHasPrefix(s, d.GetWordBeforeCursor(), true)
+	}
+
+	p := prompt.New(
+		executor,
+		completer,
+		prompt.OptionPrefix("Siz: "),
+		prompt.OptionTitle("go-agent"),
+		prompt.OptionPrefixTextColor(prompt.Yellow),
+		prompt.OptionInputTextColor(prompt.White),
+	)
+	p.Run()
 }
