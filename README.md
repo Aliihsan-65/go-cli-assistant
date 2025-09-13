@@ -39,7 +39,10 @@ Proje, standart bir Go proje yapısını takip ederek `cmd` (uygulama giriş nok
 │       └── tools.go      # Agent'ın kullanabileceği araçların tanımı
 ├── config.yaml           # Proje yapılandırması
 ├── go.mod                # Proje bağımlılıkları
-└── README.md             # Bu doküman
+├── go.sum                # Bağımlılıkların sağlama toplamları
+├── gemini.md             # Gemini ile yapılan sohbetlerin ve proje gelişiminin kaydı
+├── docker-compose.yml    # ChromaDB servisini başlatmak için Docker Compose dosyası
+├── README.md             # Bu doküman
 ```
 
 ### Katmanların Açıklaması
@@ -96,3 +99,9 @@ Proje, LLM'in sadece anlık bağlamla sınırlı kalmamasını, geçmiş deneyim
     -   LLM, bu örneklerden öğrenerek, yeni gelen "dosyaları göster" isteğinin de muhtemelen `run_shell_command` ile `ls -l` komutunu çalıştırmak anlamına geldiğini çıkarır ve doğru çıktıyı üretir.
 
 Bu sayede agent, zamanla daha akıllı hale gelir ve benzer görevleri daha önce öğrendiği başarılı yöntemleri kullanarak çözer. Bu mimari, agent'ın yetenek setini statik araç tanımlarının ötesine taşır ve dinamik bir öğrenme süreci sağlar.
+
+## 5. Diğer Dosyalar
+
+- **`chroma_debug.go`:** ChromaDB ile ilgili hata ayıklama ve test işlemleri için kullanılan geçici bir dosyadır.
+- **`deneme.txt` / `deneme.txt,`:** Test ve deneme amaçlı kullanılan geçici metin dosyalarıdır.
+- **`go-agent.log`:** Uygulamanın çalışma zamanı loglarının kaydedildiği dosyadır. Hata ayıklama için önemlidir.

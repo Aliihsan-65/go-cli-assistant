@@ -131,6 +131,7 @@ func handleToolCall(toolName, toolParams string, conversationHistory *string, ra
 
 	pterm.DefaultSection.WithLevel(1).Println("Araç Çıktısı: " + t.Name)
 	pterm.Println(result)
+
 	turnHistory += "Araç-Sonucu: " + result + "\n"
 	*conversationHistory += turnHistory
 	return true
