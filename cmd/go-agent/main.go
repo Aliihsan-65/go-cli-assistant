@@ -7,13 +7,17 @@ import (
 	"go-agent/pkg/config"
 	"go-agent/pkg/memory"
 	"go-agent/pkg/ollama"
+		"go-agent/pkg/openai"
 	"go-agent/pkg/tools"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/c-bata/go-prompt"
 	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 	"github.com/pterm/pterm"
 )
 
@@ -159,6 +163,24 @@ func formatExamples(examples []map[string]string) string {
 }
 
 func main() {
+	var executor func(string)
+
+	// Graceful shutdown with Ctrl+C by calling the executor
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		// Call the executor directly with the "exit" command
+		// This will trigger the graceful shutdown logic inside the executor
+		executor("exit")
+	}()
+
+	// .env dosyasını yükle
+	err := godotenv.Load()
+	if err != nil {
+		pterm.Info.Println(".env dosyası bulunamadı, yapılandırma okunmaya devam ediliyor.")
+	}
+
 	cfg, err := config.LoadConfig("config.yaml")
 	if err != nil {
 		pterm.Fatal.Printf("Yapılandırma yüklenemedi: %v\n", err)
@@ -166,6 +188,15 @@ func main() {
 
 	chromaClient := memory.NewChromaClient(cfg.Chroma.URL, cfg.Chroma.CollectionName)
 	var conversationHistory string
+
+	// OpenAI İstemcisini Başlat
+	var openAIClient *openai.Client
+	if cfg.ExpertAPI.APIKey != "" && cfg.ExpertAPI.APIKey != "HENUZ_YOK" {
+		openAIClient = openai.NewClient(cfg.ExpertAPI.APIKey, "gpt-4-turbo")
+		pterm.Info.Println("OpenAI uzman istemcisi başarıyla başlatıldı.")
+	} else {
+		pterm.Warning.Println("OpenAI API anahtarı bulunamadı. /expert komutu devre dışı.")
+	}
 
 	pterm.DefaultBigText.WithLetters(pterm.NewLettersFromString("GO AGENT")).Render()
 	pterm.Info.Println("Go ile yazılmış, modüler ve yapılandırılabilir AI asistanı.")
@@ -220,7 +251,7 @@ TOOL_PARAMS: ls -l
 	// Sohbet modu için gerekli değişken
 	chatPrompt := `SEN, yardımsever bir sohbet asistanısın. Görevin sadece kullanıcıyla sohbet etmektir. Asla ve asla özel formatlar, etiketler veya araçlar kullanma.`
 
-	executor := func(userInput string) {
+	executor = func(userInput string) {
 		userInput = strings.TrimSpace(userInput)
 
 		if strings.ToLower(userInput) == "exit" || strings.ToLower(userInput) == "çıkış" {
@@ -396,6 +427,34 @@ Kullanıcı İsteği: %s`, baseSystemPrompt, examplesText, cwd, conversationHist
 			pterm.Info.Println("Arama sonuçları konuşma geçmişine eklendi.")
 			return
 
+		} else if strings.HasPrefix(userInput, "/expert") {
+			// UZMAN (OPENAI) MODU
+			if openAIClient == nil {
+				pterm.Error.Println("OpenAI istemcisi başlatılamadı. Lütfen .env dosyasındaki OPENAI_API_KEY'i kontrol edin.")
+				return
+			}
+
+			query := strings.TrimSpace(strings.TrimPrefix(userInput, "/expert"))
+			if query == "" {
+				pterm.Warning.Println("Lütfen /expert komutundan sonra bir soru girin.")
+				return
+			}
+
+			conversationHistory += "Kullanıcı (Uzman'a): " + query + "\n"
+			finalPrompt := fmt.Sprintf(`--- Önceki Konuşma ---\n%s\n---------------------\n\nKullanıcı Sorusu: %s`, conversationHistory, query)
+
+			spinner, _ := pterm.DefaultSpinner.Start("Uzman (OpenAI) düşünüyor...")
+			responseStr, err := openAIClient.Generate(finalPrompt)
+			spinner.Stop()
+			if err != nil {
+				pterm.Error.Printf("OpenAI'den cevap alınamadı: %v", err)
+				return
+			}
+
+			cleanResponse := strings.TrimSpace(responseStr)
+			pterm.DefaultSection.WithLevel(1).Println("Uzman (OpenAI)")
+			pterm.Println(cleanResponse)
+			conversationHistory += "Uzman (OpenAI): " + cleanResponse + "\n"
 		} else {
 			// GENEL SOHBET MODU
 			cwd, _ := os.Getwd()
@@ -430,6 +489,7 @@ Kullanıcı İsteği: %s`, chatPrompt, cwd, conversationHistory, userInput)
 		s := []prompt.Suggest{
 			{Text: "/tool", Description: "Araç modunu kullan"},
 			{Text: "/web", Description: "Web'de arama yap"},
+			{Text: "/expert", Description: "Uzman AI'ya (OpenAI) soru sor"},
 			{Text: "/eğit", Description: "Eğitim modunu başlat/bitir"},
 			{Text: "/showmemory", Description: "Hafızayı göster"},
 			{Text: "/hafizayisifirla", Description: "Hafızayı sıfırla"},

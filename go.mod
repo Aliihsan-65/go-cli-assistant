@@ -5,6 +5,7 @@ go 1.24.6
 require (
 	github.com/c-bata/go-prompt v0.2.6
 	github.com/google/uuid v1.6.0
+	github.com/joho/godotenv v1.5.1
 	github.com/pterm/pterm v0.12.81
 	gopkg.in/yaml.v2 v2.4.0
 )

@@ -41,5 +41,10 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("yapılandırma dosyası çözümlenemedi: %w", err)
 	}
 
+	// Ortam değişkeninden OpenAI API anahtarını oku ve üzerine yaz
+	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+		cfg.ExpertAPI.APIKey = apiKey
+	}
+
 	return &cfg, nil
 }
