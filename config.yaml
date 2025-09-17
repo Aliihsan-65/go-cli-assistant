@@ -16,5 +16,3 @@ chroma: # Vektör veritabanı ayarları
   # Bir sonucun "benzer" sayılması için gereken minimum benzerlik skoru (0.0 - 1.0)
   similarity_threshold: 0.75
 
-expert_api: # İleride kullanılacak uzman API ayarları
-  api_key: "HENUZ_YOK"
